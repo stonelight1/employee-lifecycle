@@ -30,9 +30,10 @@ export async function uploadRoster(
   if (sheetName) {
     formData.append('sheet_name', sheetName)
   }
-  // 上传不能设置 Content-Type，让浏览器自动生成 boundary
+  // 上传不设置 Content-Type，让浏览器自动生成 boundary
+  // 设置 Content-Type: undefined 以覆盖 axios 实例的默认 application/json
   const res = await api.post(`${BASE}/upload`, formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
+    headers: { 'Content-Type': undefined },
   })
   return res.data.data
 }

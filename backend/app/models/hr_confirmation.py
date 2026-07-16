@@ -26,6 +26,8 @@ class HrConfirmationItem(Base):
     description: Mapped[Optional[str]] = mapped_column(sa.Text)
     before_data_json: Mapped[Optional[str]] = mapped_column(sa.Text)
     after_data_json: Mapped[Optional[str]] = mapped_column(sa.Text)
+    import_batch_id: Mapped[Optional[int]] = mapped_column(sa.Integer, nullable=True)
+    import_row_id: Mapped[Optional[int]] = mapped_column(sa.Integer, nullable=True)
     item_status: Mapped[ConfirmationItemStatus] = mapped_column(
         sa.String(15), default=ConfirmationItemStatus.PENDING, nullable=False
     )
@@ -37,4 +39,5 @@ class HrConfirmationItem(Base):
     __table_args__ = (
         sa.Index("ix_hr_confirmation_status", "item_status"),
         sa.Index("ix_hr_confirmation_employee", "employee_id", "item_status"),
+        sa.Index("ix_hr_confirmation_batch", "import_batch_id", "item_status"),
     )

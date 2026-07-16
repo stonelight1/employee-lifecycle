@@ -84,12 +84,11 @@ def parse_excel(
             ws_formula, ws_data, headers, actual_header_row,
         )
 
-        # 提取图片（仅对 .xlsm 执行）
+        # 提取图片（xlsx 和 xlsm 均可提取）
         images: dict[str, str] = {}
-        if file_path.lower().endswith(".xlsm"):
-            output_dir = os.path.join(os.path.dirname(file_path), "_images")
-            os.makedirs(output_dir, exist_ok=True)
-            images = _extract_images(file_path, sheet_name, output_dir)
+        output_dir = os.path.join(os.path.dirname(file_path), "_images")
+        os.makedirs(output_dir, exist_ok=True)
+        images = _extract_images(file_path, sheet_name, output_dir)
 
         return {
             "sheet_names": sheet_names,

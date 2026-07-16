@@ -17,7 +17,12 @@ from ..config import settings
 
 logger = logging.getLogger(__name__)
 from ..deps import get_current_user, get_db_session
-from ..enums import ResolutionStatus, RosterBatchStatus
+from ..enums import (
+    ConfirmationIssueCode,
+    ResolutionStatus,
+    RosterBatchStatus,
+    RosterRowStatus,
+)
 from ..exceptions import ResourceNotFound, ValidationError
 from ..models.roster_batch import RosterImportBatch
 from ..models.roster_issue import RosterImportIssue
@@ -55,6 +60,7 @@ from ..services.roster_mapping_service import (
     save_mapping,
 )
 from ..services.roster_parser import (
+    _detect_sheet,
     detect_sheet_names,
     parse_excel,
     save_uploaded_file,
@@ -76,21 +82,13 @@ def _default_roster_storage() -> Path:
 
 ROSTER_STORAGE = _default_roster_storage()
 
-# Maximum upload file size: 20 MB
-MAX_FILE_SIZE = 20 * 1024 * 1024
-
-# Allowed file extensions
+MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
 ALLOWED_EXTENSIONS = {".xlsx", ".xlsm"}
 
 DATE_FIELD_KEYS = {
-    "birth_date",
-    "hire_date",
-    "expected_hire_date",
-    "regularization_date",
-    "separation_date",
-    "contract_end_date",
-    "social_insurance_start_date",
-    "housing_fund_start_date",
+    "birth_date", "hire_date", "expected_hire_date",
+    "regularization_date", "separation_date", "contract_end_date",
+    "social_insurance_start_date", "housing_fund_start_date",
 }
 EXCEL_DATE_EPOCH = date(1899, 12, 30)
 
@@ -119,14 +117,61 @@ async def upload_roster(
 
     ext = Path(file.filename).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
-        raise ValidationError(f"不支持的文件类型 '{ext}'，仅支持 {', '.join(ALLOWED_EXTENSIONS)}")
+        raise ValidationError(
+            f"不支持的文件类型 '{ext}'，仅支持 {', '.join(ALLOWED_EXTENSIONS)}"
+        )
 
-    # 读取文件内容
+    if ext == ".xls":
+        raise ValidationError("请将文件另存为 .xlsx 格式后再上传")
+
     content = await file.read()
     file_size = len(content)
 
     if file_size > MAX_FILE_SIZE:
-        raise ValidationError(f"文件大小超过 20MB 限制（当前 {file_size / 1024 / 1024:.1f}MB）")
+        raise ValidationError(
+            f"文件大小超过 20MB 限制（当前 {file_size / 1024 / 1024:.1f}MB）"
+        )
+
+    if file_size == 0:
+        raise ValidationError("文件不能为空")
+
+    # --- 计算 SHA-256 ---
+    import hashlib
+    sha256_hash = hashlib.sha256(content).hexdigest()
+
+    # --- 检查重复文件 ---
+    existing_batch = (
+        db.query(RosterImportBatch)
+        .filter(
+            RosterImportBatch.file_sha256 == sha256_hash,
+            RosterImportBatch.batch_status.in_([
+                RosterBatchStatus.SUCCEEDED.value,
+                RosterBatchStatus.READY.value,
+                RosterBatchStatus.IMPORTING.value,
+            ]),
+        )
+        .order_by(RosterImportBatch.id.desc())
+        .first()
+    )
+    if existing_batch:
+        return {
+            "success": True,
+            "data": {
+                "batch_id": existing_batch.id,
+                "batch_no": existing_batch.batch_no,
+                "file_name": file.filename,
+                "file_size": file_size,
+                "file_sha256": sha256_hash,
+                "sheet_names": [],
+                "selected_sheet": None,
+                "header_row": 0,
+                "total_rows": 0,
+                "status": _enum_value(existing_batch.batch_status),
+                "message": "此文件已经上传并导入，请查看原导入记录",
+                "suggestion": "duplicate_batch",
+            },
+            "request_id": str(uuid.uuid4()),
+        }
 
     # --- 保存到本地存储 ---
     upload_buffer = BytesIO(content)
@@ -134,74 +179,89 @@ async def upload_roster(
     saved_file = save_uploaded_file(upload_buffer, str(ROSTER_STORAGE))
     stored_path = saved_file["stored_path"]
 
-    # --- 检测工作表 ---
-    sheet_names = detect_sheet_names(stored_path)
-    selected_sheet = sheet_name or (sheet_names[0] if sheet_names else None)
+    try:
+        # --- 检测工作表 ---
+        sheet_names = detect_sheet_names(stored_path)
 
-    # --- 解析表头与前几行（预览用） ---
-    parse_result = parse_excel(stored_path, sheet_name=selected_sheet)
-    header_row_index = parse_result.get("header_row", 1)
-    total_rows = len(parse_result.get("rows", []))
-    message = "文件已上传并完成表头识别"
-    suggestion = None
+        # --- 选择工作表（优先"员工花名册-总表"）---
+        if sheet_name:
+            selected_sheet = sheet_name
+        else:
+            selected_sheet = _detect_sheet(sheet_names)
 
-    # --- 创建批次记录 ---
-    batch = _create_batch_record(
-        db=db,
-        file_name=file.filename,
-        stored_path=stored_path,
-        file_size=file_size,
-        file_sha256=saved_file["sha256"],
-        mode=mode,
-        sheet_name=selected_sheet,
-        header_row_index=header_row_index,
-        total_rows=total_rows,
-    )
+        # --- 解析 ---
+        parse_result = parse_excel(stored_path, sheet_name=selected_sheet)
+        header_row_index = parse_result.get("header_row", 1)
+        total_rows = len(parse_result.get("rows", []))
+        message = "文件已上传并完成表头识别"
+        suggestion = None
 
-    # --- 自动检测字段映射 ---
-    detected_mappings = auto_detect_mappings(parse_result.get("headers", []))
-    if detected_mappings:
-        save_mapping(
-            db,
-            batch.id,
-            detected_mappings,
-            current_user.get("user_id", "system"),
+        # --- 创建批次记录 ---
+        batch = _create_batch_record(
+            db=db,
+            file_name=file.filename,
+            stored_path=stored_path,
+            file_size=file_size,
+            file_sha256=sha256_hash,
+            mode=mode,
+            sheet_name=selected_sheet,
+            header_row_index=header_row_index,
+            total_rows=total_rows,
         )
 
-    create_log(
-        db,
-        operator_id=current_user.get("user_id", "system"),
-        object_type="ROSTER_IMPORT",
-        object_id=batch.id,
-        operation_type="UPLOAD",
-        after_data={
-            "batch_id": batch.id,
-            "file_name": file.filename,
-            "mode": mode,
-            "sheet_name": selected_sheet,
-        },
-    )
+        # --- 自动检测字段映射 ---
+        detected_mappings = auto_detect_mappings(parse_result.get("headers", []))
+        if detected_mappings:
+            save_mapping(
+                db,
+                batch.id,
+                detected_mappings,
+                current_user.get("user_id", "system"),
+            )
 
-    db.commit()
+        create_log(
+            db,
+            operator_id=current_user.get("user_id", "system"),
+            object_type="ROSTER_IMPORT",
+            object_id=batch.id,
+            operation_type="UPLOAD",
+            after_data={
+                "batch_id": batch.id,
+                "file_name": file.filename,
+                "mode": mode,
+                "sheet_name": selected_sheet,
+            },
+        )
 
-    return {
-        "success": True,
-        "data": {
-            "batch_id": batch.id,
-            "batch_no": batch.batch_no,
-            "file_name": file.filename,
-            "file_size": file_size,
-            "file_sha256": saved_file["sha256"],
-            "sheet_names": sheet_names,
-            "selected_sheet": selected_sheet,
-            "header_row": header_row_index,
-            "total_rows": total_rows,
-            "status": _enum_value(batch.batch_status),
-            "message": message,
-            "suggestion": suggestion,
-        },
-        "request_id": str(uuid.uuid4()),
-    }
+        db.commit()
+
+        return {
+            "success": True,
+            "data": {
+                "batch_id": batch.id,
+                "batch_no": batch.batch_no,
+                "file_name": file.filename,
+                "file_size": file_size,
+                "file_sha256": sha256_hash,
+                "sheet_names": sheet_names,
+                "selected_sheet": selected_sheet,
+                "header_row": header_row_index,
+                "total_rows": total_rows,
+                "status": _enum_value(batch.batch_status),
+                "message": message,
+                "suggestion": suggestion,
+            },
+            "request_id": str(uuid.uuid4()),
+        }
+    except Exception:
+        # 清理本次产生的临时文件
+        import os as _os
+        try:
+            if _os.path.isfile(stored_path):
+                _os.remove(stored_path)
+        except Exception:
+            pass
+        raise
 
 
 @router.get(
@@ -214,15 +274,10 @@ def list_batches_route(
     db: DBSession = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
-    """获取花名册导入批次列表（分页）。"""
     items, total = list_batches(db, page=params.page, page_size=params.page_size)
-
     return {
         "success": True,
-        "data": {
-            "items": items,
-            "total": total,
-        },
+        "data": {"items": items, "total": total},
         "request_id": str(uuid.uuid4()),
     }
 
@@ -242,7 +297,6 @@ def get_batch_route(
     db: DBSession = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
-    """获取单个花名册导入批次详情。"""
     batch = db.query(RosterImportBatch).filter(RosterImportBatch.id == batch_id).first()
     if not batch:
         raise ResourceNotFound(f"导入批次不存在: {batch_id}")
@@ -281,9 +335,7 @@ def list_rows_route(
     db: DBSession = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
-    """获取批次下的所有导入行（分页）。"""
     query = db.query(RosterImportRow).filter(RosterImportRow.batch_id == batch_id)
-
     if status:
         query = query.filter(RosterImportRow.row_status == status)
 
@@ -320,11 +372,10 @@ def list_rows_route(
 def list_issues_route(
     batch_id: int,
     severity: str | None = Query(default=None, description="严重级别: BLOCKER / WARNING"),
-    status: str | None = Query(default=None, description="处理状态: PENDING / RESOLVED / IGNORED"),
+    status: str | None = Query(default=None, description="处理状态: PENDING / RESOLVED / IGNORED / DEFERRED"),
     db: DBSession = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
-    """获取批次导入过程中的所有问题。"""
     query = db.query(RosterImportIssue).filter(RosterImportIssue.batch_id == batch_id)
 
     if severity:
@@ -360,11 +411,8 @@ def save_mapping_route(
     db: DBSession = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
-    """保存批次列映射关系。"""
     save_mapping(
-        db,
-        batch_id,
-        body.mappings,
+        db, batch_id, body.mappings,
         current_user.get("user_id", "system"),
     )
     batch = db.query(RosterImportBatch).filter(RosterImportBatch.id == batch_id).first()
@@ -412,7 +460,6 @@ def preview_route(
     db: DBSession = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
-    """解析 Excel 完整数据，匹配员工，生成导入预览。"""
     result = generate_preview(db, batch_id)
 
     create_log(
@@ -450,7 +497,14 @@ def resolve_issue_route(
     db: DBSession = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
-    """处理/解决单个导入问题，更新问题状态。"""
+    """处理/解决单个导入问题。
+
+    动作映射：
+    - accept/modify/map/create → RESOLVED
+    - ignore → IGNORED
+    - defer → DEFERRED
+    - skip → 对应行 SKIPPED
+    """
     issue = (
         db.query(RosterImportIssue)
         .filter(RosterImportIssue.id == issue_id, RosterImportIssue.batch_id == batch_id)
@@ -459,15 +513,44 @@ def resolve_issue_route(
     if not issue:
         raise ResourceNotFound(f"导入问题不存在: {issue_id}")
 
-    # 验证允许的操作
     allowed = _parse_json_list(issue.allowed_actions_json)
     if allowed and body.action not in allowed:
         raise ValidationError(
             f"操作 '{body.action}' 不被允许，允许的操作: {', '.join(allowed)}"
         )
 
+    # 判断处理状态
+    action = body.action
+    resolve_actions = {"accept", "modify", "map", "create"}
+    ignore_actions = {"ignore"}
+    defer_actions = {"defer"}
+    skip_actions = {"skip"}
+
+    if action in skip_actions:
+        new_status = ResolutionStatus.RESOLVED
+        # 标记对应行为 SKIPPED
+        row = (
+            db.query(RosterImportRow)
+            .filter(RosterImportRow.id == issue.row_id)
+            .first()
+        )
+        if row:
+            row.row_status = RosterRowStatus.SKIPPED
+    elif action in defer_actions:
+        new_status = ResolutionStatus.DEFERRED
+    elif action in ignore_actions:
+        new_status = ResolutionStatus.IGNORED
+    elif action in resolve_actions:
+        new_status = ResolutionStatus.RESOLVED
+    else:
+        new_status = ResolutionStatus.RESOLVED
+
+    # BLOCKER 不能忽略
+    if _enum_value(issue.severity) == "BLOCKER" and new_status == ResolutionStatus.IGNORED:
+        raise ValidationError("BLOCKER 级别的问题不能忽略，请解决后再试")
+
     # 更新问题
-    issue.resolution_status = ResolutionStatus.RESOLVED
+    issue.resolution_status = new_status
     issue.resolution_action = body.action
     issue.resolution_value_json = body.value
     issue.resolution_note = body.note
@@ -526,25 +609,57 @@ def commit_route(
     db: DBSession = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
-    """提交批次导入，执行员工的新增/更新操作（幂等）。"""
-    result = commit_import(db, batch_id, current_user)
+    """提交批次导入，执行员工的新增/更新操作（幂等）。
 
-    create_log(
-        db,
-        operator_id=current_user.get("user_id", "system"),
-        object_type="ROSTER_IMPORT",
-        object_id=batch_id,
-        operation_type="COMMIT",
-        after_data=result,
-    )
+    如果提交失败，使用独立事务保存 FAILED 状态。
+    """
+    from sqlalchemy.orm import Session as NewSession
 
-    db.commit()
+    try:
+        result = commit_import(db, batch_id, current_user)
 
-    return {
-        "success": True,
-        "data": result,
-        "request_id": str(uuid.uuid4()),
-    }
+        # 操作日志
+        create_log(
+            db,
+            operator_id=current_user.get("user_id", "system"),
+            object_type="ROSTER_IMPORT",
+            object_id=batch_id,
+            operation_type="COMMIT",
+            after_data=result,
+        )
+
+        db.commit()
+
+        return {
+            "success": True,
+            "data": result,
+            "request_id": str(uuid.uuid4()),
+        }
+    except Exception:
+        db.rollback()
+
+        # 使用独立事务保存 FAILED 状态
+        try:
+            engine = db.get_bind()
+            fail_session = NewSession(bind=engine)
+            try:
+                batch = fail_session.query(RosterImportBatch).filter(
+                    RosterImportBatch.id == batch_id,
+                ).first()
+                if batch:
+                    batch.batch_status = RosterBatchStatus.FAILED
+                    batch.failed_at = datetime.now()
+                    batch.failure_message = "导入执行失败，所有业务数据已回滚"
+                    fail_session.commit()
+            finally:
+                fail_session.close()
+        except Exception as inner_e:
+            logger.error(
+                "保存 FAILED 状态失败: batch_id=%s error=%s",
+                batch_id, inner_e, exc_info=True,
+            )
+
+        raise
 
 
 # ============================================================
@@ -562,7 +677,6 @@ def rollback_preview_route(
     db: DBSession = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
-    """预览撤销操作，列出可逆和不可逆操作。"""
     result = preview_rollback(db, batch_id)
     return {
         "success": True,
@@ -581,8 +695,7 @@ def rollback_route(
     db: DBSession = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
-    """执行撤销操作（幂等：已撤销则直接返回）。"""
-    result = execute_rollback(db, batch_id)
+    result = execute_rollback(db, batch_id, current_user)
 
     create_log(
         db,
@@ -616,7 +729,6 @@ def download_file_route(
     db: DBSession = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
-    """下载上传的原始花名册文件。"""
     batch = db.query(RosterImportBatch).filter(RosterImportBatch.id == batch_id).first()
     if not batch:
         raise ResourceNotFound(f"导入批次不存在: {batch_id}")
@@ -646,7 +758,6 @@ def field_definitions_route(
     db: DBSession = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
-    """获取系统可映射的字段定义列表。"""
     definitions = get_field_definitions()
     return {
         "success": True,
@@ -664,7 +775,6 @@ def list_column_aliases_route(
     db: DBSession = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
-    """获取所有列别名。"""
     aliases = list_column_aliases(db)
     return {
         "success": True,
@@ -684,7 +794,6 @@ def create_column_alias_route(
     db: DBSession = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
-    """创建列别名（Excel 列名 -> 系统字段映射）。"""
     alias = create_column_alias(
         db,
         {
@@ -700,7 +809,10 @@ def create_column_alias_route(
         object_type="ROSTER_IMPORT",
         object_id=alias.id,
         operation_type="CREATE_COLUMN_ALIAS",
-        after_data={"source_header_normalized": body.source_header_normalized, "target_field_key": body.target_field_key},
+        after_data={
+            "source_header_normalized": body.source_header_normalized,
+            "target_field_key": body.target_field_key,
+        },
     )
 
     db.commit()
@@ -721,7 +833,6 @@ def list_value_aliases_route(
     db: DBSession = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
-    """获取所有值别名。"""
     aliases = list_value_aliases(db)
     return {
         "success": True,
@@ -741,7 +852,6 @@ def create_value_alias_route(
     db: DBSession = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
-    """创建值别名（Excel 值 -> 系统值映射）。"""
     alias = create_value_alias(
         db,
         {
@@ -790,7 +900,6 @@ def _create_batch_record(
     header_row_index: int,
     total_rows: int,
 ):
-    """创建 RosterImportBatch 记录并返回。"""
     batch_no = f"RI-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8].upper()}"
 
     batch = RosterImportBatch(
@@ -802,6 +911,7 @@ def _create_batch_record(
         file_size=file_size,
         sheet_name=sheet_name,
         header_row=json.dumps({"index": header_row_index}),
+        header_row_index=header_row_index,
         total_rows=total_rows,
         batch_status="UPLOADED",
     )
@@ -811,7 +921,6 @@ def _create_batch_record(
 
 
 def _batch_to_dict(batch) -> dict:
-    """将 RosterImportBatch ORM 对象转为字典。"""
     header = {}
     try:
         header = json.loads(batch.header_row) if batch.header_row else {}
@@ -828,6 +937,7 @@ def _batch_to_dict(batch) -> dict:
         "file_size": batch.file_size,
         "sheet_name": batch.sheet_name,
         "header_row": header,
+        "header_row_index": batch.header_row_index if hasattr(batch, "header_row_index") else None,
         "batch_status": _enum_value(batch.batch_status),
         "total_rows": batch.total_rows,
         "new_count": batch.new_count,
@@ -849,7 +959,6 @@ def _batch_to_dict(batch) -> dict:
 
 
 def _column_mappings_from_batch(batch: RosterImportBatch) -> list[dict]:
-    """将批次中保存的 header_row 映射 JSON 转为前端映射表行。"""
     field_defs = {field["key"]: field for field in get_field_definitions()}
     mappings = _parse_mapping_items(batch.header_row)
     detected_mappings = auto_detect_mappings(
@@ -899,7 +1008,6 @@ def _sync_batch_rows_from_mapping(
     batch: RosterImportBatch,
     mappings: dict[str, str | None],
 ) -> None:
-    """按当前映射把 Excel 行同步到 roster_import_row，供预览/提交使用。"""
     if not batch.stored_file_path:
         return
 
@@ -990,7 +1098,6 @@ def _parse_excel_date_value(value: object) -> date | None:
 
 
 def _row_to_dict(row) -> dict:
-    """将 RosterImportRow ORM 对象转为字典。"""
     def _safe_json(val):
         if val is None:
             return None
@@ -1018,7 +1125,6 @@ def _row_to_dict(row) -> dict:
 
 
 def _issue_to_dict(issue) -> dict:
-    """将 RosterImportIssue ORM 对象转为字典。"""
     def _safe_json(val):
         if val is None:
             return None
@@ -1050,7 +1156,6 @@ def _issue_to_dict(issue) -> dict:
 
 
 def _parse_json_list(val: str | None) -> list:
-    """解析 JSON 数组字符串，失败时返回空列表。"""
     if not val:
         return []
     try:

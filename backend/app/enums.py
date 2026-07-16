@@ -255,3 +255,81 @@ class ChecklistItemType(str, enum.Enum):
     HOUSING_FUND = "HOUSING_FUND"
     DEVICE = "DEVICE"
     ACCOUNT = "ACCOUNT"
+
+
+# ============================================================
+# 花名册导入统一字段策略
+# ============================================================
+
+
+class FieldUpdateMode(str, enum.Enum):
+    """字段更新模式。"""
+    AUTO_UPDATE = "AUTO_UPDATE"
+    """自动更新，无需 HR 确认。"""
+
+    CONFIRM_BEFORE_UPDATE = "CONFIRM_BEFORE_UPDATE"
+    """HR 确认后才更新，提交时不修改业务数据。"""
+
+    APPEND_RECORD = "APPEND_RECORD"
+    """追加记录（如银行卡），不覆盖，但提交时仅创建确认事项，不创建业务记录。"""
+
+    CALCULATED_ONLY = "CALCULATED_ONLY"
+    """仅用于计算，不持久化。"""
+
+    RAW_ONLY = "RAW_ONLY"
+    """仅保留原始值，不影响业务。"""
+
+    IGNORE = "IGNORE"
+    """完全忽略。"""
+
+
+class ConfirmationIssueCode(str, enum.Enum):
+    """HR 确认事项 issue_code 统一枚举。
+
+    生成方（commit_service）和处理方（confirmation_service）必须共用同一套值。
+    """
+    # === 员工基本资料 ===
+    IDENTITY_CARD_CHANGE = "IDENTITY_CARD_CHANGE"
+    """身份证号变更"""
+    BIRTH_DATE_CHANGE = "BIRTH_DATE_CHANGE"
+    """出生日期变更"""
+    GENDER_CHANGE = "GENDER_CHANGE"
+    """性别变更"""
+    NAME_CHANGE = "NAME_CHANGE"
+    """姓名变更"""
+
+    # === 合同信息 ===
+    CONTRACT_CHANGE = "CONTRACT_CHANGE"
+    """合同信息变更（合同状态、签订公司、合同类型、到期日等）"""
+    CONTRACT_COMPANY_CHANGE = "CONTRACT_COMPANY_CHANGE"
+    """合同签订公司变更"""
+    CONTRACT_TERM_CHANGE = "CONTRACT_TERM_CHANGE"
+    """合同期限变更"""
+
+    # === 财务账户 ===
+    NEW_BANK_ACCOUNT = "NEW_BANK_ACCOUNT"
+    """新银行卡号"""
+    NEW_ALIPAY_ACCOUNT = "NEW_ALIPAY_ACCOUNT"
+    """新支付宝账号"""
+
+    # === 在职与离职 ===
+    ACTUAL_HIRE_DATE_CHANGE = "ACTUAL_HIRE_DATE_CHANGE"
+    """实际入职日期变更"""
+    PENDING_SEPARATION = "PENDING_SEPARATION"
+    """待离职"""
+    POSSIBLE_REEMPLOYMENT = "POSSIBLE_REEMPLOYMENT"
+    """可能再次入职"""
+    MISSING_HIRE_DATE = "MISSING_HIRE_DATE"
+    """缺少入职日期"""
+    EMPLOYEE_MISSING_FROM_ROSTER = "EMPLOYEE_MISSING_FROM_ROSTER"
+    """员工不在花名册中"""
+
+    # === 薪资与福利 ===
+    SALARY_CHANGE = "SALARY_CHANGE"
+    """薪酬变更"""
+
+    # === 户籍与福利 ===
+    HOUSEHOLD_REGISTRATION_CHANGE = "HOUSEHOLD_REGISTRATION_CHANGE"
+    """户籍地址变更"""
+    RESIDENCE_ADDRESS_CHANGE = "RESIDENCE_ADDRESS_CHANGE"
+    """居住地址变更"""

@@ -1,4 +1,8 @@
-"""花名册导入预览服务。"""
+"""花名册导入预览服务。
+
+字段分类全部使用统一策略（roster_field_policy），
+不再各自维护字段列表。
+"""
 
 from __future__ import annotations
 
@@ -33,89 +37,59 @@ from ..models.roster_issue import RosterImportIssue
 from ..models.roster_row import RosterImportRow
 from .employee_service import resolve_lifecycle_stage
 from .normalize import normalize_name
+from .roster_field_policy import (
+    FieldUpdateMode as PolicyMode,
+    get_all_field_keys,
+    get_field_policy,
+)
+
 try:
     from .roster_mapping_service import resolve_value_alias
 except ImportError:
-    # roster_mapping_service 尚未创建，resolve_value_alias 将在需要时延迟解析
-    resolve_value_alias = None  # type: ignore[assignment]
+    resolve_value_alias = None
+
 
 # ============================================================
-# 字段分类
+# 使用统一策略
 # ============================================================
 
-# 自动更新字段：Excel 值直接覆盖系统值，无需人工逐项确认
-AUTO_UPDATE_FIELDS = [
-    "mobile",
-    "email",
-    "residence_address",
-    "education_level",
-    "graduation_school",
-    "major",
-    "household_registration",
-    "household_type",
-    "social_insurance_status",
-    "housing_fund_status",
-    "social_insurance_policy",
-    "housing_fund_policy",
-    "social_insurance_start_date",
-    "housing_fund_start_date",
-    "benefit_raw_text",
-    "work_city",
-    "work_mode",
-    "team_name",
-]
+# 自动更新字段
+AUTO_UPDATE_FIELDS = sorted(get_all_field_keys() - {f for f in get_all_field_keys()
+    if (p := get_field_policy(f)) and p.update_mode in (
+        PolicyMode.CONFIRM_BEFORE_UPDATE,
+        PolicyMode.APPEND_RECORD,
+        PolicyMode.CALCULATED_ONLY,
+        PolicyMode.RAW_ONLY,
+        PolicyMode.IGNORE,
+    )})
 
-# 确认字段：需要 HR 逐项确认后才应用，不允许静默覆盖
-CONFIRMATION_FIELDS = [
-    "identity_card",
-    "birth_date",
-    "gender",
-    "contract_status",
-    "signing_company",
-    "contract_type",
-    "bank_card",
-    "alipay",
-]
+# 需确认字段（包含 APPEND_RECORD）
+CONFIRMATION_FIELDS = sorted({f for f in get_all_field_keys()
+    if (p := get_field_policy(f)) and p.update_mode in (
+        PolicyMode.CONFIRM_BEFORE_UPDATE,
+        PolicyMode.APPEND_RECORD,
+    )})
 
 # ============================================================
-# 标签映射（展示用）
+# 标签映射
 # ============================================================
 
-_FIELD_LABELS: dict[str, str] = {
-    "mobile": "手机号",
-    "email": "邮箱",
-    "residence_address": "居住地址",
-    "education_level": "学历",
-    "graduation_school": "毕业学校",
-    "major": "专业",
-    "household_registration": "户籍地址",
-    "household_type": "户籍类型",
-    "social_insurance_status": "社保状态",
-    "housing_fund_status": "公积金状态",
-    "social_insurance_policy": "社保缴纳规则",
-    "housing_fund_policy": "公积金缴纳规则",
-    "social_insurance_start_date": "社保开始日期",
-    "housing_fund_start_date": "公积金开始日期",
-    "benefit_raw_text": "五险一金原文",
-    "work_city": "工作城市",
-    "work_mode": "工作模式",
-    "team_name": "团队",
-    "identity_card": "身份证号",
-    "birth_date": "出生日期",
-    "gender": "性别",
-    "contract_status": "合同状态",
-    "signing_company": "签约公司",
-    "contract_type": "合同类型",
-    "bank_card": "银行卡号",
-    "alipay": "支付宝账号",
-    "name": "姓名",
+_FIELD_LABELS: dict[str, str] = {}
+for fk in get_all_field_keys():
+    policy = get_field_policy(fk)
+    if policy and policy.labels:
+        _FIELD_LABELS[fk] = policy.labels[0]
+
+# 补充不在策略中的字段
+_FIELD_LABELS.update({
     "hire_date": "入职日期",
     "probation_months": "试用期月数",
     "regularization_date": "转正日期",
     "employment_type": "用工类型",
     "raw_salary_text": "薪酬文本",
     "assessment_result": "测评结果",
-}
+    "name": "姓名",
+})
 
 _ACTION_LABELS: dict[RosterRowStatus, list[str]] = {
     RosterRowStatus.NEW: ["import", "skip"],
@@ -140,44 +114,30 @@ _BENEFIT_CLEARABLE_FIELDS = {
 def generate_preview(db: DBSession, batch_id: int) -> dict:
     """生成花名册导入预览。
 
-    处理步骤：
-      1. 加载批次并校验状态（只允许 UPLOADED / MAPPING_REQUIRED / PREVIEW_READY）。
-      2. 加载所有行并批量查询员工匹配。
-      3. 逐行分类（NEW / UPDATE / UNCHANGED / NEEDS_CONFIRMATION / ERROR）并生成问题。
-      4. 更新批次状态为 PREVIEW_READY，持久化问题记录。
-      5. 返回含 summary / rows / issues / current_mappings 的 dict。
-
-    参数：
-      db: 数据库会话。
-      batch_id: 导入批次 ID。
-
-    返回：
-      {
-        "summary": {"new_count": int, "update_count": int, ...},
-        "rows": [RowPreviewItem, ...],
-        "issues": [IssueItem, ...],
-        "current_mappings": {str: str},
-      }
+    使用批量加载消除 N+1 查询。
     """
-    # 1. 加载批次
     batch = _load_batch(db, batch_id)
-
-    # 2. 加载所有行
     rows = _load_rows(db, batch_id)
     if not rows:
         raise ValueError("批次中没有数据行，无法预览")
 
-    # 3. 收集所有标准化姓名并批量匹配
+    # 批量匹配员工
     all_names = sorted({row.normalized_name for row in rows if row.normalized_name})
     employee_map = _match_employees_batch(db, all_names) if all_names else {}
 
-    # 4. 构建姓名 -> 行列表（用于检测 Excel 内重复）
+    # 批量加载员工当前状态（消除 N+1）
+    all_employee_ids = []
+    for name_key, emp_list in employee_map.items():
+        all_employee_ids.extend(e.id for e in emp_list if not e.is_deleted)
+    batch_state_map = _batch_load_current_states(db, all_employee_ids) if all_employee_ids else {}
+
+    # 构建姓名 -> 行列表
     all_rows_by_name: dict[str, list[RosterImportRow]] = {}
     for row in rows:
         n = row.normalized_name or ""
         all_rows_by_name.setdefault(n, []).append(row)
 
-    # 5. 逐行处理
+    # 逐行处理
     preview_rows: list[dict] = []
     all_issues: list[dict] = []
 
@@ -195,29 +155,27 @@ def generate_preview(db: DBSession, batch_id: int) -> dict:
 
     for row in rows:
         matched = employee_map.get(row.normalized_name, [])
+        current_state = batch_state_map.get(matched[0].id, {}) if len(matched) == 1 else {}
 
         row_status, diff_list, issue_list = _classify_row(
             db,
             row,
             matched,
             all_rows_by_name,
+            current_state,
         )
 
-        # 为 issue 绑定 row_id
         for iss in issue_list:
             iss["row_id"] = row.id
             if matched and len(matched) == 1:
                 iss.setdefault("employee_id", matched[0].id)
 
-        # 更新行
         row.row_status = row_status
         if diff_list:
             row.diff_json = json.dumps(diff_list, ensure_ascii=False, default=str)
 
-        # 统计
         _accumulate_summary(summary, row_status, issue_list)
 
-        # 构建预览条目
         matched_employee = matched[0] if len(matched) == 1 else None
         row_preview = {
             "row_no": row.row_no,
@@ -234,7 +192,7 @@ def generate_preview(db: DBSession, batch_id: int) -> dict:
         preview_rows.append(row_preview)
         all_issues.extend(issue_list)
 
-    # 6. 更新批次
+    # 更新批次
     _update_batch_summary(batch, summary)
     batch.batch_status = (
         RosterBatchStatus.WAITING_RESOLUTION
@@ -243,11 +201,9 @@ def generate_preview(db: DBSession, batch_id: int) -> dict:
     )
     db.flush()
 
-    # 7. 持久化问题记录
     _save_issues(db, batch_id, all_issues)
     db.flush()
 
-    # 8. 获取当前映射
     current_mappings = _get_current_mappings(batch)
 
     return {
@@ -261,10 +217,136 @@ def generate_preview(db: DBSession, batch_id: int) -> dict:
 
 
 def update_batch_status(db: DBSession, batch_id: int, status: RosterBatchStatus) -> None:
-    """更新批次状态。"""
     batch = _load_batch(db, batch_id)
     batch.batch_status = status
     db.flush()
+
+
+# ============================================================
+# 批量加载员工当前状态（消除 N+1）
+# ============================================================
+
+
+def _batch_load_current_states(
+    db: DBSession,
+    employee_ids: list[int],
+) -> dict[int, dict[str, Any]]:
+    """批量加载所有员工的当前系统状态。
+
+    一次性查询所有员工的 profile / employment / contract / account，
+    在内存中组装。
+    """
+    if not employee_ids:
+        return {}
+
+    # Employee
+    employees = {
+        e.id: e for e in db.query(Employee).filter(
+            Employee.id.in_(employee_ids), Employee.is_deleted == False
+        ).all()
+    }
+
+    # Profile
+    profiles = {}
+    for p in db.query(EmployeeProfile).filter(
+        EmployeeProfile.employee_id.in_(employee_ids),
+        EmployeeProfile.is_deleted == False,
+    ).all():
+        profiles[p.employee_id] = p
+
+    # Employment（最新一条）
+    employments = {}
+    all_emps = db.query(EmploymentRecord).filter(
+        EmploymentRecord.employee_id.in_(employee_ids),
+        EmploymentRecord.is_deleted == False,
+    ).order_by(EmploymentRecord.employment_seq.desc()).all()
+    for emp in all_emps:
+        if emp.employee_id not in employments:
+            employments[emp.employee_id] = emp
+
+    # Contract（最新一条）
+    contracts = {}
+    all_contracts = db.query(EmploymentContract).filter(
+        EmploymentContract.employee_id.in_(employee_ids),
+        EmploymentContract.is_deleted == False,
+    ).order_by(EmploymentContract.id.desc()).all()
+    for c in all_contracts:
+        if c.employee_id not in contracts:
+            contracts[c.employee_id] = c
+
+    # Financial accounts
+    accounts = {eid: {"bank": None, "alipay": None} for eid in employee_ids}
+    for a in db.query(EmployeeFinancialAccount).filter(
+        EmployeeFinancialAccount.employee_id.in_(employee_ids),
+        EmployeeFinancialAccount.account_status == AccountStatus.ACTIVE.value,
+        EmployeeFinancialAccount.is_deleted == False,
+    ).order_by(
+        EmployeeFinancialAccount.is_primary.desc(),
+        EmployeeFinancialAccount.id.desc(),
+    ).all():
+        if a.employee_id not in accounts:
+            accounts[a.employee_id] = {"bank": None, "alipay": None}
+        if a.account_type == AccountType.BANK.value and accounts[a.employee_id]["bank"] is None:
+            accounts[a.employee_id]["bank"] = a
+        if a.account_type == AccountType.ALIPAY.value and accounts[a.employee_id]["alipay"] is None:
+            accounts[a.employee_id]["alipay"] = a
+
+    _PROFILE_FIELDS = [
+        "identity_card", "gender", "birth_date",
+        "household_registration", "residence_address", "household_type",
+        "graduation_school", "major", "education_level",
+        "social_insurance_status", "housing_fund_status",
+        "social_insurance_policy", "housing_fund_policy",
+        "social_insurance_start_date", "housing_fund_start_date",
+        "benefit_raw_text",
+    ]
+
+    result: dict[int, dict[str, Any]] = {}
+    for eid in employee_ids:
+        emp = employees.get(eid)
+        if not emp:
+            continue
+
+        state: dict[str, Any] = {
+            "name": emp.name,
+            "normalized_name": emp.normalized_name,
+            "mobile": emp.mobile,
+            "email": emp.email,
+            "employee_no": emp.employee_no,
+        }
+
+        profile = profiles.get(eid)
+        for field in _PROFILE_FIELDS:
+            state[field] = getattr(profile, field, None) if profile else None
+
+        employment = employments.get(eid)
+        if employment:
+            state["work_city"] = employment.work_city
+            state["work_mode"] = _enum_value(employment.work_mode) if employment.work_mode else None
+            state["team_name"] = employment.team_name
+            state["hire_date"] = employment.hire_date
+            state["employment_status"] = _enum_value(employment.employment_status) if employment.employment_status else None
+            state["probation_months"] = employment.probation_months
+            state["regularization_date"] = employment.regularization_date
+            state["employment_type"] = _enum_value(employment.employment_type) if employment.employment_type else None
+        else:
+            for f in ("work_city", "work_mode", "team_name", "hire_date", "employment_status",
+                      "probation_months", "regularization_date", "employment_type"):
+                state[f] = None
+
+        contract = contracts.get(eid)
+        if contract:
+            state["contract_status"] = contract.contract_status
+            state["signing_company"] = contract.signing_company
+            state["contract_type"] = _enum_value(contract.contract_type) if contract.contract_type else None
+
+        e_accounts = accounts.get(eid, {"bank": None, "alipay": None})
+        state["bank_card"] = e_accounts["bank"].account_no if e_accounts["bank"] else None
+        state["alipay"] = e_accounts["alipay"].account_no if e_accounts["alipay"] else None
+
+        result[eid] = state
+
+    return result
 
 
 # ============================================================
@@ -275,10 +357,6 @@ def update_batch_status(db: DBSession, batch_id: int, status: RosterBatchStatus)
 def _match_employees_batch(
     db: DBSession, names: list[str]
 ) -> dict[str, list[Employee]]:
-    """批量查询员工，返回 ``normalized_name -> [Employee, ...]`` 的映射。
-
-    只返回未逻辑删除且非 ``ENTRY_ERROR`` 状态的活跃员工记录。
-    """
     if not names:
         return {}
 
@@ -308,25 +386,13 @@ def _classify_row(
     row: RosterImportRow,
     matched_employees: list[Employee],
     all_rows_by_name: dict[str, list[RosterImportRow]],
+    current_state: dict[str, Any] | None = None,
 ) -> tuple[RosterRowStatus, list[dict], list[dict]]:
-    """对单行数据进行分类。
-
-    返回 ``(row_status, diff_list, issue_list)``。
-
-    分类规则：
-      - 姓名为空 → ERROR
-      - Excel 内重复姓名 → ERROR
-      - 数据库匹配到多条 → ERROR
-      - 数据库未匹配到 → NEW
-      - 数据库精确匹配一条：
-        - 员工已删除 / ENTRY_ERROR → ERROR
-        - 员工已离职 → 检查重聘场景
-        - 计算差异，根据差异类型决定 UPDATE / UNCHANGED / NEEDS_CONFIRMATION
-    """
+    """对单行数据进行分类。"""
     name = row.normalized_name
     issues: list[dict] = []
 
-    # ── 姓名为空 ──────────────────────────────────────────
+    # 姓名为空
     if not name:
         issues.append(
             _build_issue(
@@ -340,7 +406,7 @@ def _classify_row(
         )
         return (RosterRowStatus.ERROR, [], issues)
 
-    # ── Excel 内重复姓名 ──────────────────────────────────
+    # Excel 内重复姓名
     same_name_rows = all_rows_by_name.get(name, [])
     if len(same_name_rows) > 1:
         issues.append(
@@ -356,14 +422,13 @@ def _classify_row(
         )
         return (RosterRowStatus.ERROR, [], issues)
 
-    # ── 筛选出活跃匹配结果 ──────────────────────────────
+    # 筛选活跃匹配结果
     active_matched = [
-        e
-        for e in matched_employees
+        e for e in matched_employees
         if not e.is_deleted and e.employee_status != EmployeeStatus.ENTRY_ERROR.value
     ]
 
-    # 多条匹配 → ERROR
+    # 多条匹配
     if len(active_matched) > 1:
         candidate_info = "; ".join(
             f"{e.name}(ID:{e.id}, no:{e.employee_no or '—'})" for e in active_matched
@@ -381,12 +446,10 @@ def _classify_row(
         )
         return (RosterRowStatus.ERROR, [], issues)
 
-    # 无匹配 → NEW
+    # 无匹配
     if len(active_matched) == 0:
-        # 检查是否因已删除/ENTRY_ERROR 被过滤
         inactive = [
-            e
-            for e in matched_employees
+            e for e in matched_employees
             if e.is_deleted or e.employee_status == EmployeeStatus.ENTRY_ERROR.value
         ]
         if inactive:
@@ -404,57 +467,39 @@ def _classify_row(
                 )
             )
             return (RosterRowStatus.ERROR, [], issues)
-        # ── NEW 行必填字段校验 ─────────────────────────────
-        # hire_date 是创建新员工的必需字段，缺失时标记为 ERROR
-        _NEW_REQUIRED_FIELDS = ["hire_date"]
-        _new_row_data = _parse_row_data(row)
-        for _rfield in _NEW_REQUIRED_FIELDS:
-            _rval = _new_row_data.get(_rfield)
-            if _rval is None or (isinstance(_rval, str) and not _rval.strip()):
-                issues.append(
-                    _build_issue(
-                        issue_code="MISSING_REQUIRED_FIELD",
-                        severity=IssueSeverity.BLOCKER,
-                        title="缺少必填字段",
-                        message=f"必填字段「{_FIELD_LABELS.get(_rfield, _rfield)}」为空，请补充。",
-                        field_key=_rfield,
-                        allowed_actions=["skip", "add_manually"],
-                    )
-                )
-                return (RosterRowStatus.ERROR, [], issues)
+
+        # NEW 行：入职日期为 WARNING，不是 BLOCKER
         return (RosterRowStatus.NEW, [], issues)
 
-    # ── 精确匹配到一个 ──────────────────────────────────
+    # 精确匹配到一个
     employee = active_matched[0]
 
-    # 已离职 → 重聘场景
-    current_employment = _find_current_employment(db, employee.id)
+    # 已离职 → 重聘
+    employment = _find_current_employment(db, employee.id)
     lifecycle_stage = (
-        resolve_lifecycle_stage(current_employment) if current_employment else "UNKNOWN"
+        resolve_lifecycle_stage(employment) if employment else "UNKNOWN"
     )
-    if current_employment and current_employment.employment_status == EmploymentStatus.SEPARATED:
+    if employment and employment.employment_status == EmploymentStatus.SEPARATED:
         issues.append(
             _build_issue(
                 issue_code="REHIRE_SCENARIO",
                 severity=IssueSeverity.WARNING,
                 title="已离职员工重新入职",
                 message=f"员工「{employee.name}」当前任职状态为「已离职」，"
-                f"导入将触发重新入职流程，会创建新的任职记录。",
+                f"导入将触发重新入职流程。",
                 field_key=None,
                 allowed_actions=["proceed", "skip"],
             )
         )
 
-    # 获取系统当前状态
-    current_state = _get_current_state(db, employee)
+    # 使用传入的当前状态或重新查询
+    if current_state is None:
+        current_state = _get_current_state_single(db, employee)
 
-    # 解析行数据
     new_data = _parse_row_data(row)
 
-    # 计算差异
     diff_list = _compute_diff(current_state, new_data)
 
-    # 生成其他问题
     extra_issues = _generate_issues(
         row, matched_employees, None, diff_list, all_rows_by_name, new_data, current_state
     )
@@ -470,162 +515,27 @@ def _classify_row(
         has_update = any(
             d.get("change_type") == "UPDATE" for d in diff_list
         )
-        if has_confirmation and has_update:
+        if has_confirmation:
             status = RosterRowStatus.NEEDS_CONFIRMATION
-        elif has_confirmation:
-            status = RosterRowStatus.NEEDS_CONFIRMATION
-        else:
+        elif has_update:
             status = RosterRowStatus.UPDATE
+        else:
+            status = RosterRowStatus.UNCHANGED
 
     return (status, diff_list, issues)
 
 
 # ============================================================
-# 当前状态查询
+# 单员工当前状态查询（回退用）
 # ============================================================
 
 
-def _get_current_state(db: DBSession, employee: Employee) -> dict:
-    """获取员工当前系统状态，以扁平 dict 返回。
-
-    聚合 Employee / EmployeeProfile / EmploymentRecord /
-    EmploymentContract / EmployeeFinancialAccount 的信息。
-    """
-    state: dict[str, Any] = {}
-
-    # ── Employee ─────────────────────────────────────────
-    state["name"] = employee.name
-    state["normalized_name"] = employee.normalized_name
-    state["mobile"] = employee.mobile
-    state["email"] = employee.email
-    state["employee_no"] = employee.employee_no
-
-    # ── EmployeeProfile ─────────────────────────────────
-    profile = (
-        db.query(EmployeeProfile)
-        .filter(
-            EmployeeProfile.employee_id == employee.id,
-            EmployeeProfile.is_deleted == False,
-        )
-        .first()
-    )
-    _PROFILE_FIELDS = [
-        "identity_card",
-        "gender",
-        "birth_date",
-        "household_registration",
-        "residence_address",
-        "household_type",
-        "graduation_school",
-        "major",
-        "education_level",
-        "social_insurance_status",
-        "housing_fund_status",
-        "social_insurance_policy",
-        "housing_fund_policy",
-        "social_insurance_start_date",
-        "housing_fund_start_date",
-        "benefit_raw_text",
-    ]
-    if profile:
-        for field in _PROFILE_FIELDS:
-            state[field] = getattr(profile, field, None)
-    else:
-        for field in _PROFILE_FIELDS:
-            state[field] = None
-
-    # ── EmploymentRecord ────────────────────────────────
-    employment = _find_current_employment(db, employee.id)
-    _EMPLOYMENT_FIELDS = [
-        "work_city",
-        "work_mode",
-        "team_name",
-        "hire_date",
-        "employment_status",
-        "probation_months",
-        "regularization_date",
-        "employment_type",
-    ]
-    if employment:
-        state["work_city"] = employment.work_city
-        state["work_mode"] = (
-            _enum_value(employment.work_mode) if employment.work_mode else None
-        )
-        state["team_name"] = employment.team_name
-        state["hire_date"] = employment.hire_date
-        state["employment_status"] = (
-            _enum_value(employment.employment_status) if employment.employment_status else None
-        )
-        state["probation_months"] = employment.probation_months
-        state["regularization_date"] = employment.regularization_date
-        state["employment_type"] = (
-            _enum_value(employment.employment_type) if employment.employment_type else None
-        )
-    else:
-        for field in _EMPLOYMENT_FIELDS:
-            state[field] = None
-
-    # ── EmploymentContract（最近一条）───────────────────
-    contract = (
-        db.query(EmploymentContract)
-        .filter(
-            EmploymentContract.employee_id == employee.id,
-            EmploymentContract.is_deleted == False,
-        )
-        .order_by(EmploymentContract.id.desc())
-        .first()
-    )
-    if contract:
-        state["contract_status"] = contract.contract_status
-        state["signing_company"] = contract.signing_company
-        state["contract_type"] = (
-            _enum_value(contract.contract_type) if contract.contract_type else None
-        )
-    else:
-        state["contract_status"] = None
-        state["signing_company"] = None
-        state["contract_type"] = None
-
-    # ── EmployeeFinancialAccount ────────────────────────
-    # 银行卡
-    bank = (
-        db.query(EmployeeFinancialAccount)
-        .filter(
-            EmployeeFinancialAccount.employee_id == employee.id,
-            EmployeeFinancialAccount.account_type == AccountType.BANK,
-            EmployeeFinancialAccount.account_status == AccountStatus.ACTIVE,
-            EmployeeFinancialAccount.is_deleted == False,
-        )
-        .order_by(
-            EmployeeFinancialAccount.is_primary.desc(),
-            EmployeeFinancialAccount.id.desc(),
-        )
-        .first()
-    )
-    state["bank_card"] = bank.account_no if bank else None
-
-    # 支付宝
-    alipay = (
-        db.query(EmployeeFinancialAccount)
-        .filter(
-            EmployeeFinancialAccount.employee_id == employee.id,
-            EmployeeFinancialAccount.account_type == AccountType.ALIPAY,
-            EmployeeFinancialAccount.account_status == AccountStatus.ACTIVE,
-            EmployeeFinancialAccount.is_deleted == False,
-        )
-        .order_by(
-            EmployeeFinancialAccount.is_primary.desc(),
-            EmployeeFinancialAccount.id.desc(),
-        )
-        .first()
-    )
-    state["alipay"] = alipay.account_no if alipay else None
-
-    return state
+def _get_current_state_single(db: DBSession, employee: Employee) -> dict:
+    """获取单个员工的当前系统状态。"""
+    return _batch_load_current_states(db, [employee.id]).get(employee.id, {})
 
 
 def _find_current_employment(db: DBSession, employee_id: int) -> EmploymentRecord | None:
-    """找到员工的当前有效任职（按任职序号倒序）。"""
     return (
         db.query(EmploymentRecord)
         .filter(
@@ -643,23 +553,7 @@ def _find_current_employment(db: DBSession, employee_id: int) -> EmploymentRecor
 
 
 def _compute_diff(current: dict, new: dict) -> list[dict]:
-    """计算当前值与新值的差异。
-
-    规则：
-      - **空 Excel 值不覆盖系统已有值** —— 如果新值为 ``None`` 或空白字符串，
-        即使系统已有值也不会标记为差异。
-      - ``AUTO_UPDATE_FIELDS`` 的差异标记为 ``UPDATE``。
-      - ``CONFIRMATION_FIELDS`` 的差异标记为 ``NEEDS_CONFIRMATION``。
-
-    返回差异列表，每个元素：:
-      {
-        "field_key": str,
-        "field_label": str,
-        "old_value": str | None,
-        "new_value": str | None,
-        "change_type": "UPDATE" | "NEEDS_CONFIRMATION",
-      }
-    """
+    """计算当前值与新值的差异。"""
     diffs: list[dict] = []
 
     for field in AUTO_UPDATE_FIELDS:
@@ -678,14 +572,10 @@ def _append_diff_if_changed(
     new: dict,
     change_type: str,
 ) -> None:
-    """如果字段值发生了变化，追加一条差异记录。
-
-    新值为 None 或空白时不视为变更（不覆盖系统已有值）。
-    """
+    """如果字段值发生了变化，追加一条差异记录。"""
     old_val = current.get(field)
     new_val = new.get(field)
 
-    # 空值不覆盖
     if new_val is None and not (
         field in _BENEFIT_CLEARABLE_FIELDS
         and new.get("benefit_parse_status") == "PARSED"
@@ -695,7 +585,6 @@ def _append_diff_if_changed(
     if isinstance(new_val, str) and not new_val.strip():
         return
 
-    # 相等则不记录
     if _values_equal(old_val, new_val):
         return
 
@@ -711,7 +600,6 @@ def _append_diff_if_changed(
 
 
 def _values_equal(a: Any, b: Any) -> bool:
-    """比较两个值是否在语义上相等，处理日期和 None 等类型。"""
     if a is None and b is None:
         return True
     if a is None or b is None:
@@ -720,7 +608,6 @@ def _values_equal(a: Any, b: Any) -> bool:
 
 
 def _serialize_value(value: Any) -> str | None:
-    """将值序列化为规范字符串用于比较和展示。"""
     if value is None:
         return None
     if isinstance(value, (date, datetime)):
@@ -732,10 +619,6 @@ def _serialize_value(value: Any) -> str | None:
 
 
 def _parse_row_data(row: RosterImportRow) -> dict:
-    """解析行的归一化数据 JSON 为 dict。
-
-    返回空 dict 表示没有可解析的数据。
-    """
     if not row.normalized_data_json:
         return {}
     try:
@@ -759,13 +642,7 @@ def _generate_issues(
     new_data: dict[str, Any] | None = None,
     current_state: dict[str, Any] | None = None,
 ) -> list[dict]:
-    """根据行数据、匹配结果和差异生成额外问题。
-
-    参数 ``new_data`` 和 ``current_state`` 提供额外的上下文以便执行
-    更细致的数据校验；如果未传入，函数内部会尝试重新解析。
-
-    返回 issues list。
-    """
+    """根据行数据、匹配结果和差异生成额外问题。"""
     issues: list[dict] = []
     name = row.normalized_name
 
@@ -777,7 +654,7 @@ def _generate_issues(
     if current_state is None:
         current_state = {}
 
-    # ── 姓名规范校验（BLOCKER）────────────────────────────
+    # ── 姓名规范校验（BLOCKER）──
     if not name:
         issues.append(
             _build_issue(
@@ -790,7 +667,7 @@ def _generate_issues(
             )
         )
 
-    # ── 试用期月份数（BLOCKER）────────────────────────────
+    # ── 试用期月份数校验（BLOCKER：1-6个月）──
     raw_pm = new_data.get("probation_months")
     if raw_pm is not None:
         try:
@@ -801,20 +678,20 @@ def _generate_issues(
                         issue_code="INVALID_PROBATION_MONTHS",
                         severity=IssueSeverity.BLOCKER,
                         title="试用期月份数不合法",
-                        message=f"试用期月数必须为正整数，当前值：{pm}。",
+                        message=f"试用期月数必须为 1-6 个月，当前值：{pm}。",
                         field_key="probation_months",
                         old_value=current_state.get("probation_months"),
                         new_value=str(pm),
                         allowed_actions=["correct_manually", "ignore"],
                     )
                 )
-            elif pm > 12:
+            elif pm > 6:
                 issues.append(
                     _build_issue(
                         issue_code="INVALID_PROBATION_MONTHS",
-                        severity=IssueSeverity.WARNING,
-                        title="试用期月份数偏长",
-                        message=f"试用期 {pm} 个月超过常见范围（1-12 个月），请确认。",
+                        severity=IssueSeverity.BLOCKER,
+                        title="试用期月份数超过最大限制",
+                        message=f"试用期 {pm} 个月超过最大允许值 6 个月，请确认。",
                         field_key="probation_months",
                         old_value=current_state.get("probation_months"),
                         new_value=str(pm),
@@ -835,24 +712,25 @@ def _generate_issues(
                 )
             )
 
-    # ── 必填字段校验（BLOCKER）────────────────────────────
-    # 这些字段在行数据中应为非空；name 和 hire_date 是最基本的必填项
-    _REQUIRED_FIELDS = ["hire_date"]
-    for rfield in _REQUIRED_FIELDS:
-        rval = new_data.get(rfield)
-        if rval is None or (isinstance(rval, str) and not rval.strip()):
-            issues.append(
-                _build_issue(
-                    issue_code="MISSING_REQUIRED_FIELD",
-                    severity=IssueSeverity.BLOCKER,
-                    title=f"缺少必填字段",
-                    message=f"必填字段「{_FIELD_LABELS.get(rfield, rfield)}」为空，请补充。",
-                    field_key=rfield,
-                    allowed_actions=["skip", "add_manually"],
-                )
+    # ── 必填字段校验（WARNING，非 BLOCKER）──
+    # 入职日期缺失创建 WARNING，不阻断
+    hire_date = new_data.get("hire_date")
+    if hire_date is None or (isinstance(hire_date, str) and not hire_date.strip()):
+        # NEW 行缺少入职日期：WARNING（仍允许创建员工档案）
+        # UPDATE 行缺少入职日期：不覆盖系统值
+        issues.append(
+            _build_issue(
+                issue_code="MISSING_REQUIRED_FIELD",
+                severity=IssueSeverity.WARNING,
+                title="缺少入职日期",
+                message="入职日期为空。新员工仍会创建员工档案，"
+                "但不会创建任职记录。请导入后补充入职日期。",
+                field_key="hire_date",
+                allowed_actions=["skip", "add_manually", "ignore"],
             )
+        )
 
-    # ── 转正日期缺失提醒（WARNING）────────────────────────
+    # ── 转正日期缺失提醒（WARNING）──
     emp_type = new_data.get("employment_type") or current_state.get(
         "employment_type"
     )
@@ -873,7 +751,7 @@ def _generate_issues(
                 )
             )
 
-    # ── 年龄与出生日期交叉校验（WARNING）──────────────────
+    # ── 年龄与出生日期交叉校验（WARNING）──
     birth_date_raw = new_data.get("birth_date") or current_state.get("birth_date")
     age_raw = new_data.get("age")
     if birth_date_raw and age_raw is not None:
@@ -883,9 +761,7 @@ def _generate_issues(
             if bd is not None:
                 today = date.today()
                 computed_age = (
-                    today.year
-                    - bd.year
-                    - ((today.month, today.day) < (bd.month, bd.day))
+                    today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
                 )
                 if abs(computed_age - declared_age) > 1:
                     issues.append(
@@ -904,7 +780,7 @@ def _generate_issues(
         except (ValueError, TypeError):
             pass
 
-    # ── 工龄校验（WARNING）────────────────────────────────
+    # ── 工龄校验（WARNING）──
     hire_date_raw = new_data.get("hire_date") or current_state.get("hire_date")
     work_age_raw = new_data.get("work_age")
     if hire_date_raw and work_age_raw is not None:
@@ -932,7 +808,7 @@ def _generate_issues(
         except (ValueError, TypeError):
             pass
 
-    # ── 薪酬文本解析警告（WARNING）────────────────────────
+    # ── 薪酬文本解析警告（WARNING）──
     salary_text = new_data.get("raw_salary_text")
     if salary_text and isinstance(salary_text, str) and salary_text.strip():
         if not _looks_like_parsed_salary(salary_text):
@@ -942,7 +818,7 @@ def _generate_issues(
                     severity=IssueSeverity.WARNING,
                     title="薪酬文本可能无法自动解析",
                     message=f"薪酬文本「{salary_text[:100]}」格式不标准，"
-                    f"系统可能无法完全自动解析。导入后请手工核对薪酬数据。",
+                    f"系统可能无法完全自动解析。",
                     field_key="raw_salary_text",
                     new_value=salary_text[:200],
                     allowed_actions=["ignore", "correct_manually"],
@@ -956,7 +832,7 @@ def _generate_issues(
                 issue_code="BENEFIT_TEXT_UNRECOGNIZED",
                 severity=IssueSeverity.WARNING,
                 title="五险一金缴纳方案无法识别",
-                message="五险一金原文无法自动解析，系统只保留原文，不自动修改社保或公积金方案。",
+                message="五险一金原文无法自动解析。",
                 field_key="benefit_raw_text",
                 old_value=current_state.get("benefit_raw_text"),
                 new_value=new_data.get("benefit_raw_text"),
@@ -964,7 +840,7 @@ def _generate_issues(
             )
         )
 
-    # ── PDP 测评内容可疑（WARNING）────────────────────────
+    # ── PDP 测评内容可疑（WARNING）──
     pdp_text = new_data.get("pdp_result") or new_data.get("assessment_result")
     if pdp_text and isinstance(pdp_text, str) and pdp_text.strip():
         if _looks_suspicious_pdp(pdp_text):
@@ -973,28 +849,12 @@ def _generate_issues(
                     issue_code="PDP_CONTENT_SUSPICIOUS",
                     severity=IssueSeverity.WARNING,
                     title="PDP 测评内容疑似异常",
-                    message=f"PDP 测评文本「{pdp_text[:100]}」看起来不符合预期的测评报告格式。"
-                    f"请核实后手动上传或修正。",
+                    message=f"PDP 测评文本「{pdp_text[:100]}」看起来不符合预期的测评报告格式。",
                     field_key="pdp_result",
                     new_value=pdp_text[:200],
                     allowed_actions=["ignore", "correct_manually"],
                 )
             )
-
-    # ── 纯图文预警（WARNING）──────────────────────────────
-    image_text = new_data.get("image_text") or new_data.get("attachment_description")
-    if image_text and isinstance(image_text, str) and image_text.strip():
-        issues.append(
-            _build_issue(
-                issue_code="IMAGE_TEXT_ONLY",
-                severity=IssueSeverity.WARNING,
-                title="附件说明为纯文本",
-                message="该字段仅包含文本描述，可能需要上传附件以替代或补充。",
-                field_key="image_text",
-                new_value=image_text[:200],
-                allowed_actions=["ignore", "upload_attachment"],
-            )
-        )
 
     return issues
 
@@ -1016,7 +876,6 @@ def _build_issue(
     employee_id: int | None = None,
     row_id: int | None = None,
 ) -> dict:
-    """构建 Issue dict 的内部方法。"""
     return {
         "issue_code": issue_code,
         "severity": severity.value,
@@ -1032,7 +891,6 @@ def _build_issue(
 
 
 def _issue_to_dict(issue: dict) -> dict:
-    """将内部 issue dict 转为前端展示格式。"""
     return {
         "issue_code": issue.get("issue_code"),
         "severity": issue.get("severity"),
@@ -1048,7 +906,6 @@ def _issue_to_dict(issue: dict) -> dict:
 
 
 def _load_batch(db: DBSession, batch_id: int) -> RosterImportBatch:
-    """加载批次，校验存在性和可预览状态。"""
     batch = (
         db.query(RosterImportBatch)
         .filter(
@@ -1074,7 +931,6 @@ def _load_batch(db: DBSession, batch_id: int) -> RosterImportBatch:
 
 
 def _load_rows(db: DBSession, batch_id: int) -> list[RosterImportRow]:
-    """加载批次的所有数据行。"""
     return (
         db.query(RosterImportRow)
         .filter(RosterImportRow.batch_id == batch_id)
@@ -1088,7 +944,6 @@ def _accumulate_summary(
     row_status: RosterRowStatus,
     issue_list: list[dict],
 ) -> None:
-    """累加汇总计数。"""
     key_map = {
         RosterRowStatus.NEW: "new_count",
         RosterRowStatus.UPDATE: "update_count",
@@ -1110,19 +965,16 @@ def _accumulate_summary(
 
 
 def _update_batch_summary(batch: RosterImportBatch, summary: dict) -> None:
-    """将汇总结果写回 batch 记录。"""
     batch.total_rows = summary.get("total_rows", 0)
     batch.new_count = summary.get("new_count", 0)
     batch.update_count = summary.get("update_count", 0)
     batch.unchanged_count = summary.get("unchanged_count", 0)
     batch.confirmation_count = summary.get("confirmation_count", 0)
     batch.error_count = summary.get("error_count", 0)
-    # warning_count 共享自 summary 中的 warning_count 字段
     batch.warning_count = summary.get("warning_count", 0)
 
 
 def _save_issues(db: DBSession, batch_id: int, issues: list[dict]) -> None:
-    """将问题列表持久化到 ``roster_import_issue`` 表。"""
     for iss in issues:
         db_issue = RosterImportIssue(
             batch_id=batch_id,
@@ -1135,13 +987,11 @@ def _save_issues(db: DBSession, batch_id: int, issues: list[dict]) -> None:
             message=iss.get("message"),
             old_value_json=(
                 json.dumps(iss.get("old_value"), ensure_ascii=False, default=str)
-                if iss.get("old_value") is not None
-                else None
+                if iss.get("old_value") is not None else None
             ),
             new_value_json=(
                 json.dumps(iss.get("new_value"), ensure_ascii=False, default=str)
-                if iss.get("new_value") is not None
-                else None
+                if iss.get("new_value") is not None else None
             ),
             allowed_actions_json=json.dumps(
                 iss.get("allowed_actions", []), ensure_ascii=False
@@ -1152,9 +1002,12 @@ def _save_issues(db: DBSession, batch_id: int, issues: list[dict]) -> None:
 
 
 def _get_current_mappings(batch: RosterImportBatch) -> dict[str, str]:
-    """从批次中获取当前字段映射配置。"""
     try:
-        data = json.loads(batch.header_row or "[]")
+        # 优先使用 column_mappings_json，兼容旧 header_row
+        if hasattr(batch, "column_mappings_json") and batch.column_mappings_json:
+            data = json.loads(batch.column_mappings_json)
+        else:
+            data = json.loads(batch.header_row or "[]")
     except (json.JSONDecodeError, TypeError):
         return {}
     if not isinstance(data, list):
@@ -1176,13 +1029,11 @@ def _enum_value(value):
 
 
 def _is_formal_employment(emp_type: str) -> bool:
-    """判断用工类型是否为正式。"""
     formal_values = {"FORMAL", "正式", "正式员工", "正式工"}
     return emp_type.upper() in {"FORMAL"} or emp_type in formal_values
 
 
 def _parse_date(value: Any) -> date | None:
-    """尝试将值解析为 ``date`` 对象。"""
     if isinstance(value, date):
         return value
     if isinstance(value, datetime):
@@ -1197,37 +1048,22 @@ def _parse_date(value: Any) -> date | None:
 
 
 def _looks_like_parsed_salary(text: str) -> bool:
-    """粗略判断薪酬文本是否为可解析格式。
-
-    如果文本中包含数字和常见单位（元/千/万）或匹配
-    「数字+单位」模式则认为可解析。
-    """
     if not text:
         return True
-    # 纯数字 → 可解析
     if text.strip().isdigit():
         return True
-    # 包含常见分隔符和数字 → 可解析
     import re
-
     if re.search(r"[\d,.]+", text):
         return True
     return False
 
 
 def _looks_suspicious_pdp(text: str) -> bool:
-    """粗略判断 PDP 测评文本是否疑似异常。
-
-    如果文本过短、包含大量标点符号或 URL，视为可疑。
-    """
     if not text or len(text.strip()) < 10:
         return True
     import re
-
-    # 包含 URL
     if re.search(r"https?://", text, re.IGNORECASE):
         return True
-    # 全是标点符号或非文字内容
     alpha_ratio = sum(1 for c in text if c.isalpha()) / max(len(text), 1)
     if alpha_ratio < 0.3:
         return True

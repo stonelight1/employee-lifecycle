@@ -25,6 +25,8 @@ class RosterImportBatch(CommonMixin, Base):
     batch_status: Mapped[RosterBatchStatus] = mapped_column(
         sa.String(30), default=RosterBatchStatus.UPLOADED, nullable=False
     )
+    header_row_index: Mapped[Optional[int]] = mapped_column(sa.Integer, nullable=True)
+    column_mappings_json: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
     total_rows: Mapped[int] = mapped_column(sa.Integer, default=0)
     new_count: Mapped[int] = mapped_column(sa.Integer, default=0)
     update_count: Mapped[int] = mapped_column(sa.Integer, default=0)

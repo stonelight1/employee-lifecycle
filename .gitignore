@@ -53,3 +53,4 @@ backend/logs/
 
 # Local data (roster imports, employee attachments, backups)
 backend/local_data/
+/.trae/
