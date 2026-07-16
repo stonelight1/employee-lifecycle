@@ -1,0 +1,48 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Playwright / local browser automation artifacts
+.playwright-mcp/
+playwright-report/
+test-results/
+
+# Local logs
+*.log
+/.run/
+
+# Python
+/backend/.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.db
+
+# SQLite
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# Environment variables
+.env
+/backend/.env
+
+# Frontend
+/frontend/node_modules/
+/frontend/dist/
+/frontend/tsconfig.tsbuildinfo
+
+# IDE
+*.swp
+*.swo
+/简历库/
+
+# Excel (sample data, not to commit)
+*.xlsx
+
+# Backup
+*.backup
+*.bak
