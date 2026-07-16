@@ -236,6 +236,16 @@ class ResolutionStatus(str, enum.Enum):
     DEFERRED = "DEFERRED"
 
 
+class RosterSkipReason(str, enum.Enum):
+    """花名册行跳过原因枚举。"""
+    REGION_COOPERATION = "REGION_COOPERATION"
+    """地区为合作"""
+    MANUAL_SKIP = "MANUAL_SKIP"
+    """手动跳过"""
+    ERROR_SKIP = "ERROR_SKIP"
+    """因错误跳过"""
+
+
 class ConfirmationItemStatus(str, enum.Enum):
     PENDING = "PENDING"
     CONFIRMED = "CONFIRMED"
@@ -281,6 +291,44 @@ class FieldUpdateMode(str, enum.Enum):
 
     IGNORE = "IGNORE"
     """完全忽略。"""
+
+
+class IssueAction(str, enum.Enum):
+    """花名册导入问题处理动作统一枚举。
+
+    生成问题、前端按钮和后端处理器必须使用同一套动作。
+    """
+    ACCEPT = "ACCEPT"
+    """接受/确认，标记问题已处理"""
+    MODIFY_VALUE = "MODIFY_VALUE"
+    """修改字段值后重新预览"""
+    MAP_VALUE = "MAP_VALUE"
+    """映射组织字典值"""
+    SELECT_EMPLOYEE = "SELECT_EMPLOYEE"
+    """从已有员工中选择匹配目标"""
+    CREATE_NEW_EMPLOYEE = "CREATE_NEW_EMPLOYEE"
+    """创建新员工"""
+    CONFIRM_REEMPLOYMENT = "CONFIRM_REEMPLOYMENT"
+    """确认重新入职"""
+    DEFER = "DEFER"
+    """推迟处理"""
+    IGNORE = "IGNORE"
+    """忽略（仅 WARNING 可用）"""
+    SKIP_ROW = "SKIP_ROW"
+    """跳过整行"""
+
+
+# 未知动作集合（禁止用于 BLOCKER）
+_BLOCKER_FORBIDDEN_ACTIONS = {IssueAction.IGNORE, IssueAction.ACCEPT, IssueAction.DEFER}
+
+# BLOCKER 必须明确处理的动作
+_BLOCKER_REQUIRED_ACTIONS = {
+    IssueAction.MODIFY_VALUE,
+    IssueAction.MAP_VALUE,
+    IssueAction.SELECT_EMPLOYEE,
+    IssueAction.CREATE_NEW_EMPLOYEE,
+    IssueAction.SKIP_ROW,
+}
 
 
 class ConfirmationIssueCode(str, enum.Enum):

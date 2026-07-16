@@ -49,6 +49,11 @@ from ..schemas.roster_import import (
 from ..services.operation_log_service import create_log
 from ..services.roster_commit_service import commit_import
 from ..services.roster_import_service import list_batches
+from ..services.roster_issue_resolution import (
+    get_handler,
+    needs_recalc,
+    resolve_issue,
+)
 from ..services.roster_mapping_service import (
     auto_detect_mappings,
     create_column_alias,
@@ -139,16 +144,12 @@ async def upload_roster(
     import hashlib
     sha256_hash = hashlib.sha256(content).hexdigest()
 
-    # --- 检查重复文件 ---
+    # --- 检查重复文件（仅 SUCCEEDED 禁止重复） ---
     existing_batch = (
         db.query(RosterImportBatch)
         .filter(
             RosterImportBatch.file_sha256 == sha256_hash,
-            RosterImportBatch.batch_status.in_([
-                RosterBatchStatus.SUCCEEDED.value,
-                RosterBatchStatus.READY.value,
-                RosterBatchStatus.IMPORTING.value,
-            ]),
+            RosterImportBatch.batch_status == RosterBatchStatus.SUCCEEDED.value,
         )
         .order_by(RosterImportBatch.id.desc())
         .first()
@@ -167,7 +168,7 @@ async def upload_roster(
                 "header_row": 0,
                 "total_rows": 0,
                 "status": _enum_value(existing_batch.batch_status),
-                "message": "此文件已经上传并导入，请查看原导入记录",
+                "message": f"该文件已经于{existing_batch.completed_at.strftime('%Y年%m月%d日') if existing_batch.completed_at else ''}导入",
                 "suggestion": "duplicate_batch",
             },
             "request_id": str(uuid.uuid4()),
@@ -499,11 +500,18 @@ def resolve_issue_route(
 ):
     """处理/解决单个导入问题。
 
-    动作映射：
-    - accept/modify/map/create → RESOLVED
-    - ignore → IGNORED
-    - defer → DEFERRED
-    - skip → 对应行 SKIPPED
+    动作映射规则：
+    - MODIFY_VALUE → 修改字段值，重置行状态，需重新预览
+    - MAP_VALUE → 映射组织字典，重置行状态，需重新预览
+    - SELECT_EMPLOYEE → 选择已有员工，重置行状态，需重新预览
+    - CREATE_NEW_EMPLOYEE → 创建新员工，重置行状态，需重新预览
+    - CONFIRM_REEMPLOYMENT → 确认重新入职，重置行状态，需重新预览
+    - SKIP_ROW → 跳过整行
+    - IGNORE → 忽略（仅 WARNING）
+    - DEFER → 推迟处理
+
+    未知动作 → 拒绝。
+    BLOCKER 级别问题不能 IGNORE 或仅 ACCEPT。
     """
     issue = (
         db.query(RosterImportIssue)
@@ -519,62 +527,24 @@ def resolve_issue_route(
             f"操作 '{body.action}' 不被允许，允许的操作: {', '.join(allowed)}"
         )
 
-    # 判断处理状态
-    action = body.action
-    resolve_actions = {"accept", "modify", "map", "create"}
-    ignore_actions = {"ignore"}
-    defer_actions = {"defer"}
-    skip_actions = {"skip"}
-
-    if action in skip_actions:
-        new_status = ResolutionStatus.RESOLVED
-        # 标记对应行为 SKIPPED
-        row = (
-            db.query(RosterImportRow)
-            .filter(RosterImportRow.id == issue.row_id)
-            .first()
+    # 检查处理器是否存在
+    handler = get_handler(body.action)
+    if handler is None:
+        raise ValidationError(
+            f"不支持的问题处理动作: {body.action}"
         )
-        if row:
-            row.row_status = RosterRowStatus.SKIPPED
-    elif action in defer_actions:
-        new_status = ResolutionStatus.DEFERRED
-    elif action in ignore_actions:
-        new_status = ResolutionStatus.IGNORED
-    elif action in resolve_actions:
-        new_status = ResolutionStatus.RESOLVED
-    else:
-        new_status = ResolutionStatus.RESOLVED
 
-    # BLOCKER 不能忽略
-    if _enum_value(issue.severity) == "BLOCKER" and new_status == ResolutionStatus.IGNORED:
-        raise ValidationError("BLOCKER 级别的问题不能忽略，请解决后再试")
+    # 执行处理
+    resolve_issue(db, issue, body.action, body.value, body.note, current_user)
 
-    # 更新问题
-    issue.resolution_status = new_status
-    issue.resolution_action = body.action
-    issue.resolution_value_json = body.value
-    issue.resolution_note = body.note
-    issue.resolved_at = datetime.now()
-
-    db.flush()
-
-    # 检查是否所有 BLOCKER 都已处理 → 更新批次状态为 READY
-    remaining_blockers = (
-        db.query(RosterImportIssue)
-        .filter(
-            RosterImportIssue.batch_id == batch_id,
-            RosterImportIssue.severity == "BLOCKER",
-            RosterImportIssue.resolution_status == ResolutionStatus.PENDING,
-        )
-        .count()
-    )
-
-    if remaining_blockers == 0:
+    # 如果动作触发了数据修改，需要重新预览该行
+    if needs_recalc(body.action) and issue.row_id:
+        # 标记批次需要重新预览
         batch = (
             db.query(RosterImportBatch).filter(RosterImportBatch.id == batch_id).first()
         )
-        if batch and _enum_value(batch.batch_status) == RosterBatchStatus.WAITING_RESOLUTION.value:
-            batch.batch_status = RosterBatchStatus.READY
+        if batch and batch.batch_status == RosterBatchStatus.READY.value:
+            batch.batch_status = RosterBatchStatus.PREVIEW_READY
 
     create_log(
         db,

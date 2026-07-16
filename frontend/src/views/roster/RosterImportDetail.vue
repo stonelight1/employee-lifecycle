@@ -23,6 +23,7 @@ import BaseButton from '@/components/base/BaseButton.vue'
 import BaseBadge from '@/components/base/BaseBadge.vue'
 import BaseModal from '@/components/base/BaseModal.vue'
 import BaseEmpty from '@/components/base/BaseEmpty.vue'
+import PageHeader from '@/components/layout/PageHeader.vue'
 import {
   getBatchDetail,
   getBatchRows,
@@ -255,25 +256,30 @@ const rowFilterOptions = [
 <template>
   <div class="page">
     <!-- Header -->
-    <div class="page-header">
-      <button class="back-link" @click="goBack">
-        <ChevronLeft :size="16" />
-        返回列表
-      </button>
-      <div class="header-main">
-        <div class="header-title-row">
-          <h1 class="page-title">导入详情</h1>
-          <BaseBadge
-            v-if="batchDetail"
-            type="custom"
-            :label="getBatchStatusInfo(batchDetail.batch_status || batchDetail.status || '').label"
-            :color="getBatchStatusInfo(batchDetail.batch_status || batchDetail.status || '').color"
-            :background="getBatchStatusInfo(batchDetail.batch_status || batchDetail.status || '').background"
-            size="md"
-          />
-        </div>
-      </div>
-    </div>
+    <PageHeader
+      title="导入详情"
+      :subtitle="batchDetail?.file_name || ''"
+      :show-back="true"
+      :badge-text="batchDetail ? getBatchStatusInfo(batchDetail.batch_status || batchDetail.status || '').label : ''"
+      :badge-variant="batchDetail ? (batchDetail.batch_status === 'SUCCEEDED' ? 'success' : batchDetail.batch_status === 'FAILED' ? 'danger' : 'info') : 'neutral'"
+      @back="goBack"
+    >
+      <template #actions>
+        <BaseButton variant="ghost" size="sm" @click="downloadFile">
+          <Download :size="16" />
+          下载原文件
+        </BaseButton>
+        <BaseButton
+          v-if="batchDetail?.batch_status === 'SUCCEEDED'"
+          variant="warning"
+          size="sm"
+          @click="handleRollbackPreview"
+        >
+          <RotateCcw :size="16" />
+          撤销导入
+        </BaseButton>
+      </template>
+    </PageHeader>
 
     <div v-if="!batchDetail && loading" class="loading-state text-tertiary">加载中...</div>
 
@@ -636,39 +642,6 @@ const rowFilterOptions = [
 </template>
 
 <style scoped>
-.page-header {
-  margin-bottom: 20px;
-}
-.back-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: none;
-  border: none;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  cursor: pointer;
-  padding: 0;
-  margin-bottom: 8px;
-}
-.back-link:hover {
-  color: var(--color-primary);
-}
-.header-main {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.header-title-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.page-title {
-  font-size: var(--font-size-lg);
-  font-weight: 700;
-}
-
 /* Card */
 .card {
   background: var(--color-surface);

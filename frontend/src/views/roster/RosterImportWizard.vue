@@ -5,6 +5,8 @@ import { ChevronLeft, Check, Loader2 } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import BaseModal from '@/components/base/BaseModal.vue'
+import BaseButton from '@/components/base/BaseButton.vue'
+import PageHeader from '@/components/layout/PageHeader.vue'
 
 import RosterUploadStep from './RosterUploadStep.vue'
 import RosterMappingStep from './RosterMappingStep.vue'
@@ -367,10 +369,11 @@ watch(currentStep, async (step) => {
 
 <template>
   <div class="page">
-    <div class="page-header">
-      <button class="back-link" @click="goBackToList"><ChevronLeft :size="16" /> 返回列表</button>
-      <h1 class="page-title">花名册导入向导</h1>
-    </div>
+    <PageHeader
+      title="花名册导入向导"
+      :show-back="true"
+      @back="goBackToList"
+    />
 
     <!-- Step indicator -->
     <div class="step-indicator">
@@ -474,10 +477,6 @@ watch(currentStep, async (step) => {
 </template>
 
 <style scoped>
-.page-header { margin-bottom: 24px; }
-.back-link { display: inline-flex; align-items: center; gap: 4px; background: none; border: none; color: var(--color-text-secondary); font-size: var(--font-size-sm); cursor: pointer; padding: 0; margin-bottom: 8px; }
-.back-link:hover { color: var(--color-primary); }
-.page-title { font-size: var(--font-size-lg); font-weight: 700; }
 .step-indicator { display: flex; align-items: center; justify-content: center; gap: 0; margin-bottom: 28px; padding: 16px 24px; background: var(--color-surface); border-radius: var(--radius-lg); box-shadow: var(--shadow-card); }
 .step-item { display: flex; align-items: center; gap: 8px; position: relative; }
 .step-circle { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: var(--font-size-sm); font-weight: 600; background: var(--color-bg); color: var(--color-text-tertiary); border: 2px solid var(--color-border); transition: all 0.2s; flex-shrink: 0; }

@@ -40,6 +40,7 @@ from ..models import (
     SeparationRecord,
 )
 from ..models.note import EmployeeNote
+from .date_utils import parse_date_value as _parse_date
 from .operation_log_service import create_log
 
 
@@ -330,7 +331,11 @@ def _handle_actual_hire_date_change(
     operator_id: str,
     now: datetime,
 ) -> None:
-    """处理实际入职日期变更。"""
+    """处理实际入职日期变更。
+
+    只查找当前有效任职（PENDING / ACTIVE / SEPARATING），
+    不修改历史 SEPARATED 记录。
+    """
     if not after_data:
         return
 
@@ -343,6 +348,11 @@ def _handle_actual_hire_date_change(
     if item.employment_id:
         emp = db.query(EmploymentRecord).filter(
             EmploymentRecord.id == item.employment_id,
+            EmploymentRecord.employment_status.in_([
+                EmploymentStatus.PENDING,
+                EmploymentStatus.ACTIVE,
+                EmploymentStatus.SEPARATING,
+            ]),
         ).first()
         if emp:
             emp.hire_date = new_hire_date
@@ -403,10 +413,49 @@ def _handle_possible_reemployment(
     operator_id: str,
     now: datetime,
 ) -> None:
-    """处理再次入职。"""
-    if not after_data:
-        return
+    """处理再次入职。
 
+    P0 规则：
+    - 实际入职日期必须由 HR 填写，不允许为空时默认今天。
+    - 创建新的任职记录，不覆盖历史任职。
+    - 同一时间只能有一条有效任职。
+    - 重新计算试用期。
+    - 幂等生成 7天、15天、30天、45天和转正面谈任务。
+    """
+    if not after_data:
+        raise ValidationError("缺少再次入职数据")
+
+    hire_date = _parse_date(
+        after_data.get("hire_date") or after_data.get("actual_hire_date")
+    )
+    if not hire_date:
+        raise ValidationError("再次入职必须提供实际入职日期")
+
+    # 不允许晚于今天
+    if hire_date > datetime.now().date():
+        raise ValidationError("实际入职日期不能晚于今天")
+
+    # 查找当前有效任职（PENDING / ACTIVE / SEPARATING）
+    current_employment = (
+        db.query(EmploymentRecord)
+        .filter(
+            EmploymentRecord.employee_id == item.employee_id,
+            EmploymentRecord.employment_status.in_([
+                EmploymentStatus.PENDING,
+                EmploymentStatus.ACTIVE,
+                EmploymentStatus.SEPARATING,
+            ]),
+            EmploymentRecord.is_deleted == False,
+        )
+        .first()
+    )
+    if current_employment:
+        raise ValidationError(
+            f"员工已有有效任职（状态: {current_employment.employment_status.value}），"
+            f"不能重新入职"
+        )
+
+    # 获取下一个 employment_seq
     last_emp = (
         db.query(EmploymentRecord)
         .filter(
@@ -418,21 +467,28 @@ def _handle_possible_reemployment(
     )
     next_seq = (last_emp.employment_seq + 1) if last_emp else 1
 
-    hire_date = _parse_date(
-        after_data.get("hire_date") or after_data.get("actual_hire_date"),
-    )
-    actual_hire_date = _parse_date(
-        after_data.get("actual_hire_date") or after_data.get("hire_date"),
-    )
+    # 解析试用期信息
+    prob_months = after_data.get("probation_months", 3)
+    try:
+        prob_months = int(prob_months)
+    except (ValueError, TypeError):
+        prob_months = 3
+    if prob_months < 1 or prob_months > 6:
+        prob_months = 3
+
+    from ..services.employment_service import calculate_probation_end_date
+    probation_end = calculate_probation_end_date(hire_date, prob_months)
 
     emp = EmploymentRecord(
         employee_id=item.employee_id,
         employment_seq=next_seq,
         employment_status=EmploymentStatus.ACTIVE.value,
-        hire_date=hire_date or datetime.now().date(),
-        actual_hire_date=actual_hire_date,
-        expected_hire_date=_parse_date(after_data.get("expected_hire_date")),
-        probation_months=after_data.get("probation_months", 3),
+        hire_date=hire_date,
+        actual_hire_date=hire_date,
+        probation_months=prob_months,
+        probation_start_date=hire_date,
+        probation_end_date=probation_end,
+        probation_status=ProbationStatus.IN_PROGRESS,
         employment_type=after_data.get("employment_type"),
         department=after_data.get("department"),
         position=after_data.get("position"),
@@ -446,6 +502,10 @@ def _handle_possible_reemployment(
     db.add(emp)
     db.flush()
 
+    # 幂等生成跟进任务
+    from .roster_commit_service import _generate_initialization_tasks
+    _generate_initialization_tasks(db, emp.id, hire_date)
+
 
 @_register(ConfirmationIssueCode.MISSING_HIRE_DATE)
 def _handle_missing_hire_date(
@@ -458,81 +518,132 @@ def _handle_missing_hire_date(
 ) -> None:
     """处理缺少入职日期。
 
-    HR 补充入职日期后：
-    1. 创建任职记录
-    2. 计算试用期
-    3. 生成剩余跟进任务
+    P0 规则：
+    - 实际入职日期必填，不能晚于今天。
+    - 不允许系统自行使用今天补齐。
+    - 查找当前有效任职（PENDING / ACTIVE / SEPARATING），
+      不获取任意历史记录（禁止用 .first() 取得 SEPARATED 记录）。
+    - 没有当前任职时创建新记录。
+    - 不允许把 SEPARATED 历史记录改回 ACTIVE。
+    - 支持"已经入职"和"预计以后入职"两种场景。
+
+    已经入职：
+    - 创建新任职
+    - status = ACTIVE
+    - actual_hire_date = HR填写日期
+    - 计算试用期
+    - 生成尚未过期的跟进任务
+
+    预计以后入职：
+    - 创建 PENDING 任职
+    - expected_hire_date = HR填写日期
+    - actual_hire_date = null
+    - 不生成正式试用期任务
     """
     if not after_data:
-        return
+        raise ValidationError("缺少入职日期数据")
 
-    hire_date = _parse_date(
+    hire_date_input = _parse_date(
         after_data.get("hire_date") or after_data.get("actual_hire_date")
     )
-    if not hire_date:
-        raise ValidationError("缺少入职日期，无法创建任职记录")
+    if not hire_date_input:
+        raise ValidationError("实际入职日期不能为空，请填写入职日期")
 
-    from ..services.employment_service import calculate_probation_end_date
+    today = datetime.now().date()
 
-    # 更新员工资料状态
+    # 判断是"已经入职"还是"预计以后入职"
+    is_actual_hire = hire_date_input <= today
+    if is_actual_hire:
+        # 已经入职
+        actual_hire_date = hire_date_input
+        employment_status = EmploymentStatus.ACTIVE
+        expected_hire_date = None
+    else:
+        # 预计以后入职
+        actual_hire_date = None
+        employment_status = EmploymentStatus.PENDING
+        expected_hire_date = hire_date_input
+        hire_date_input = hire_date_input
+
+    # 查找当前有效任职（仅限 PENDING / ACTIVE / SEPARATING）
+    current_active = (
+        db.query(EmploymentRecord)
+        .filter(
+            EmploymentRecord.employee_id == item.employee_id,
+            EmploymentRecord.employment_status.in_([
+                EmploymentStatus.PENDING,
+                EmploymentStatus.ACTIVE,
+                EmploymentStatus.SEPARATING,
+            ]),
+            EmploymentRecord.is_deleted == False,
+        )
+        .first()
+    )
+    if current_active:
+        # 更新已有有效任职的入职日期
+        current_active.hire_date = hire_date_input
+        current_active.actual_hire_date = actual_hire_date
+        current_active.expected_hire_date = expected_hire_date
+        current_active.employment_status = employment_status.value
+        current_active.updated_by = operator_id
+        current_active.updated_at = now
+        employment = current_active
+    else:
+        # 创建新任职
+        max_seq = (
+            db.query(EmploymentRecord.employment_seq)
+            .filter(EmploymentRecord.employee_id == item.employee_id)
+            .order_by(EmploymentRecord.employment_seq.desc())
+            .first()
+        )
+        employment_seq = (max_seq[0] if max_seq else 0) + 1
+
+        probation_months = after_data.get("probation_months", 3)
+        try:
+            probation_months = int(probation_months)
+        except (ValueError, TypeError):
+            probation_months = 3
+
+        from ..services.employment_service import calculate_probation_end_date
+
+        if is_actual_hire and probation_months >= 1 and probation_months <= 6:
+            probation_end = calculate_probation_end_date(hire_date_input, probation_months)
+            probation_start = hire_date_input
+            prob_status = ProbationStatus.IN_PROGRESS
+        else:
+            probation_end = None
+            probation_start = None
+            prob_status = ProbationStatus.NOT_STARTED
+
+        employment = EmploymentRecord(
+            employee_id=item.employee_id,
+            employment_seq=employment_seq,
+            employment_status=employment_status.value,
+            hire_date=hire_date_input,
+            actual_hire_date=actual_hire_date,
+            expected_hire_date=expected_hire_date,
+            probation_months=probation_months if is_actual_hire else 0,
+            probation_start_date=probation_start,
+            probation_end_date=probation_end,
+            probation_status=prob_status.value,
+            created_by=operator_id,
+            updated_by=operator_id,
+        )
+        db.add(employment)
+        db.flush()
+
+    # 更新员工资料为完整
     employee = db.query(Employee).filter(Employee.id == item.employee_id).first()
     if employee:
-        employee.profile_completeness_status = "COMPLETE"
-        # employee 表可能没有这个字段，需要 try/except
         try:
             employee.profile_completeness_status = "COMPLETE"
         except Exception:
             pass
 
-    # 检查是否已有任职
-    existing = (
-        db.query(EmploymentRecord)
-        .filter(
-            EmploymentRecord.employee_id == item.employee_id,
-            EmploymentRecord.is_deleted == False,
-        )
-        .first()
-    )
-    if existing:
-        existing.hire_date = hire_date
-        existing.actual_hire_date = hire_date
-        existing.employment_status = EmploymentStatus.ACTIVE.value
-        existing.updated_by = operator_id
-        existing.updated_at = now
-        return
-
-    # 创建新任职
-    max_seq = (
-        db.query(EmploymentRecord.employment_seq)
-        .filter(EmploymentRecord.employee_id == item.employee_id)
-        .order_by(EmploymentRecord.employment_seq.desc())
-        .first()
-    )
-    employment_seq = (max_seq[0] if max_seq else 0) + 1
-
-    prob_months = after_data.get("probation_months", 3)
-    probation_end = calculate_probation_end_date(hire_date, int(prob_months))
-
-    emp = EmploymentRecord(
-        employee_id=item.employee_id,
-        employment_seq=employment_seq,
-        employment_status=EmploymentStatus.ACTIVE.value,
-        hire_date=hire_date,
-        actual_hire_date=hire_date,
-        probation_months=prob_months,
-        probation_start_date=hire_date,
-        probation_end_date=probation_end,
-        probation_status=ProbationStatus.IN_PROGRESS,
-        department=after_data.get("department"),
-        position=after_data.get("position"),
-        created_by=operator_id,
-    )
-    db.add(emp)
-    db.flush()
-
-    # 生成跟进任务
-    from .roster_commit_service import _generate_initialization_tasks
-    _generate_initialization_tasks(db, emp.id, hire_date)
+    # 已入职时生成跟进任务
+    if is_actual_hire:
+        from .roster_commit_service import _generate_initialization_tasks
+        _generate_initialization_tasks(db, employment.id, hire_date_input)
 
 
 @_register(ConfirmationIssueCode.EMPLOYEE_MISSING_FROM_ROSTER)
@@ -941,19 +1052,6 @@ def ignore_item(
 
 
 # ============================================================
-# 工具函数
+# 工具函数（使用统一 date_utils 模块）
 # ============================================================
-
-
-def _parse_date(value: Any) -> Any:
-    """安全解析日期值。"""
-    if value is None:
-        return None
-    if isinstance(value, (datetime, date)):
-        return value.date() if isinstance(value, datetime) else value
-    if isinstance(value, str):
-        try:
-            return datetime.strptime(value[:10], "%Y-%m-%d").date()
-        except (ValueError, IndexError):
-            return None
-    return None
+# _parse_date 已从 date_utils 导入为 _parse_date

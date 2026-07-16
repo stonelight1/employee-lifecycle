@@ -9,6 +9,8 @@ import { useConfirm } from '@/composables/useConfirm'
 import BaseBadge from '@/components/base/BaseBadge.vue'
 import BaseEmpty from '@/components/base/BaseEmpty.vue'
 import BaseSkeleton from '@/components/base/BaseSkeleton.vue'
+import BaseButton from '@/components/base/BaseButton.vue'
+import PageHeader from '@/components/layout/PageHeader.vue'
 import { Check, X, EyeOff, ArrowLeft, AlertCircle, CreditCard, User } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -126,13 +128,12 @@ onMounted(loadData)
 
 <template>
   <div class="confirmation-page">
-    <div class="page-header">
-      <button class="back-btn" @click="router.push('/dashboard')">
-        <ArrowLeft :size="18" />
-      </button>
-      <h2>待确认事项</h2>
-      <span v-if="pendingCount > 0" class="pending-badge">{{ pendingCount }} 条待处理</span>
-    </div>
+    <PageHeader
+      title="待确认事项"
+      :subtitle="pendingCount > 0 ? `${pendingCount} 条待处理` : ''"
+      :show-back="true"
+      @back="router.push('/dashboard')"
+    />
 
     <!-- 筛选 -->
     <div class="filter-tabs">
@@ -209,43 +210,7 @@ onMounted(loadData)
   margin: 0 auto;
   padding: 24px;
 }
-.page-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 20px;
-}
-.page-header h2 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-}
-.back-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border: none;
-  border-radius: 6px;
-  background: var(--color-bg, #f5f5f5);
-  cursor: pointer;
-  color: var(--color-text-secondary);
-}
-.back-btn:hover {
-  background: var(--color-border, #e0e0e0);
-}
-.pending-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 10px;
-  border-radius: 12px;
-  font-size: 12px;
-  font-weight: 500;
-  color: #fff;
-  background: var(--color-danger, #e53e3e);
-}
-.filter-tabs {
+	.filter-tabs {
   display: flex;
   gap: 8px;
   margin-bottom: 16px;

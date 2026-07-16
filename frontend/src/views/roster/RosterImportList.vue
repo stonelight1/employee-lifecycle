@@ -10,6 +10,7 @@ import BaseButton from '@/components/base/BaseButton.vue'
 import BaseBadge from '@/components/base/BaseBadge.vue'
 import BaseModal from '@/components/base/BaseModal.vue'
 import BaseEmpty from '@/components/base/BaseEmpty.vue'
+import PageHeader from '@/components/layout/PageHeader.vue'
 import { listBatches, getRollbackPreview, executeRollback, getFileDownloadUrl } from '@/services/rosterImportService'
 import type { BatchListItem } from '@/types/roster-import'
 
@@ -119,16 +120,17 @@ const totalPages = computed(() => Math.ceil(total.value / pageSize))
 
 <template>
   <div class="page">
-    <div class="page-intro">
-      <div class="page-intro-left">
-        <h1 class="page-title">花名册导入</h1>
-        <p class="page-subtitle">上传 Excel 花名册，批量导入和更新员工信息</p>
-      </div>
-      <BaseButton variant="primary" @click="goToNew">
-        <Upload :size="16" />
-        新建导入
-      </BaseButton>
-    </div>
+    <PageHeader
+      title="花名册导入"
+      subtitle="上传 Excel 花名册，批量导入和更新员工信息"
+    >
+      <template #actions>
+        <BaseButton variant="primary" @click="goToNew">
+          <Upload :size="16" />
+          新建导入
+        </BaseButton>
+      </template>
+    </PageHeader>
 
     <!-- Table -->
     <div class="card table-card">
@@ -238,23 +240,6 @@ const totalPages = computed(() => Math.ceil(total.value / pageSize))
 </template>
 
 <style scoped>
-.page-intro {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 20px;
-  gap: 16px;
-}
-.page-title {
-  font-size: var(--font-size-lg);
-  font-weight: 700;
-  margin-bottom: 4px;
-}
-.page-subtitle {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-secondary);
-}
-
 /* Card table */
 .card {
   background: var(--color-surface);

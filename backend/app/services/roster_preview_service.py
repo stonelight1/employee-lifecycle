@@ -17,6 +17,7 @@ from ..enums import (
     AccountType,
     EmployeeStatus,
     EmploymentStatus,
+    IssueAction,
     IssueSeverity,
     ProbationStatus,
     ResolutionStatus,
@@ -37,6 +38,7 @@ from ..models.roster_issue import RosterImportIssue
 from ..models.roster_row import RosterImportRow
 from .employee_service import resolve_lifecycle_stage
 from .normalize import normalize_name
+from .roster_cooperation import is_cooperation_region
 from .roster_field_policy import (
     FieldUpdateMode as PolicyMode,
     get_all_field_keys,
@@ -92,11 +94,11 @@ _FIELD_LABELS.update({
 })
 
 _ACTION_LABELS: dict[RosterRowStatus, list[str]] = {
-    RosterRowStatus.NEW: ["import", "skip"],
-    RosterRowStatus.UPDATE: ["apply", "skip"],
-    RosterRowStatus.UNCHANGED: ["skip"],
-    RosterRowStatus.NEEDS_CONFIRMATION: ["confirm", "skip"],
-    RosterRowStatus.ERROR: ["skip", "force_import"],
+    RosterRowStatus.NEW: [IssueAction.ACCEPT.value, IssueAction.SKIP_ROW.value],
+    RosterRowStatus.UPDATE: [IssueAction.ACCEPT.value, IssueAction.SKIP_ROW.value],
+    RosterRowStatus.UNCHANGED: [],
+    RosterRowStatus.NEEDS_CONFIRMATION: [IssueAction.ACCEPT.value, IssueAction.SKIP_ROW.value],
+    RosterRowStatus.ERROR: [IssueAction.SKIP_ROW.value],
     RosterRowStatus.SKIPPED: [],
 }
 
@@ -131,10 +133,22 @@ def generate_preview(db: DBSession, batch_id: int) -> dict:
         all_employee_ids.extend(e.id for e in emp_list if not e.is_deleted)
     batch_state_map = _batch_load_current_states(db, all_employee_ids) if all_employee_ids else {}
 
-    # 构建姓名 -> 行列表
+    # 构建姓名 -> 行列表（排除合作行，避免合作行参与重名判断）
     all_rows_by_name: dict[str, list[RosterImportRow]] = {}
+    cooperation_row_ids: set[int] = set()
     for row in rows:
         n = row.normalized_name or ""
+        # 检查是否合作地区
+        new_data = _parse_row_data(row)
+        if is_cooperation_region(new_data):
+            cooperation_row_ids.add(row.id)
+            row.row_status = RosterRowStatus.SKIPPED
+            row.planned_actions_json = json.dumps({
+                "action": "SKIP",
+                "reason_code": "REGION_COOPERATION",
+                "reason": "地区为合作，不纳入员工生命周期系统",
+            }, ensure_ascii=False)
+            continue
         all_rows_by_name.setdefault(n, []).append(row)
 
     # 逐行处理
@@ -154,6 +168,31 @@ def generate_preview(db: DBSession, batch_id: int) -> dict:
     }
 
     for row in rows:
+        # 合作行已经跳过，直接汇总
+        if row.id in cooperation_row_ids:
+            _accumulate_summary(summary, RosterRowStatus.SKIPPED, [])
+            row_preview = {
+                "row_no": row.row_no,
+                "employee_id": None,
+                "normalized_name": row.normalized_name,
+                "matched_employee_name": None,
+                "row_status": RosterRowStatus.SKIPPED.value,
+                "diff_fields": [],
+                "issues": [{
+                    "issue_code": "REGION_COOPERATION",
+                    "severity": "INFO",
+                    "title": "地区为合作，不纳入系统",
+                    "message": "该员工所在地区标记为「合作」，"
+                    "跳过导入员工生命周期系统。",
+                    "field_key": "work_city",
+                    "allowed_actions": [],
+                }],
+                "can_skip": False,
+                "actions": [],
+            }
+            preview_rows.append(row_preview)
+            continue
+
         matched = employee_map.get(row.normalized_name, [])
         current_state = batch_state_map.get(matched[0].id, {}) if len(matched) == 1 else {}
 
@@ -401,7 +440,7 @@ def _classify_row(
                 title="姓名为空",
                 message="该行姓名字段为空，无法匹配员工。请手动补全姓名或跳过该行。",
                 field_key="name",
-                allowed_actions=["skip", "manual_input"],
+                allowed_actions=[IssueAction.SKIP_ROW.value, IssueAction.MODIFY_VALUE.value],
             )
         )
         return (RosterRowStatus.ERROR, [], issues)
@@ -417,7 +456,7 @@ def _classify_row(
                 message=f"姓名「{name}」在 Excel 中出现了 {len(same_name_rows)} 次，"
                 f"无法自动确定匹配目标（行号：{','.join(str(r.row_no) for r in same_name_rows)}）。",
                 field_key="name",
-                allowed_actions=["skip", "force_new"],
+                allowed_actions=[IssueAction.SKIP_ROW.value, IssueAction.SELECT_EMPLOYEE.value],
             )
         )
         return (RosterRowStatus.ERROR, [], issues)
@@ -441,7 +480,7 @@ def _classify_row(
                 message=f"姓名「{name}」在数据库中匹配到多条员工记录：{candidate_info}。"
                 f"请手动选择目标员工。",
                 field_key="name",
-                allowed_actions=["skip", "manual_select"],
+                allowed_actions=[IssueAction.SKIP_ROW.value, IssueAction.SELECT_EMPLOYEE.value],
             )
         )
         return (RosterRowStatus.ERROR, [], issues)
@@ -463,7 +502,7 @@ def _classify_row(
                     f"但该记录已{'删除' if emp.is_deleted else '标记为录入错误'}。"
                     f"无法自动匹配。",
                     field_key="name",
-                    allowed_actions=["skip", "reactivate"],
+                    allowed_actions=[IssueAction.SKIP_ROW.value, IssueAction.CREATE_NEW_EMPLOYEE.value],
                 )
             )
             return (RosterRowStatus.ERROR, [], issues)
@@ -488,7 +527,7 @@ def _classify_row(
                 message=f"员工「{employee.name}」当前任职状态为「已离职」，"
                 f"导入将触发重新入职流程。",
                 field_key=None,
-                allowed_actions=["proceed", "skip"],
+                allowed_actions=[IssueAction.CONFIRM_REEMPLOYMENT.value, IssueAction.SKIP_ROW.value],
             )
         )
 
@@ -663,7 +702,7 @@ def _generate_issues(
                 title="姓名为空",
                 message="姓名字段为空，无法完成匹配。",
                 field_key="name",
-                allowed_actions=["skip", "manual_input"],
+                allowed_actions=[IssueAction.SKIP_ROW.value, IssueAction.MODIFY_VALUE.value],
             )
         )
 
@@ -682,7 +721,7 @@ def _generate_issues(
                         field_key="probation_months",
                         old_value=current_state.get("probation_months"),
                         new_value=str(pm),
-                        allowed_actions=["correct_manually", "ignore"],
+                        allowed_actions=[IssueAction.MODIFY_VALUE.value, IssueAction.IGNORE.value],
                     )
                 )
             elif pm > 6:
@@ -695,7 +734,7 @@ def _generate_issues(
                         field_key="probation_months",
                         old_value=current_state.get("probation_months"),
                         new_value=str(pm),
-                        allowed_actions=["correct_manually", "ignore"],
+                        allowed_actions=[IssueAction.MODIFY_VALUE.value, IssueAction.IGNORE.value],
                     )
                 )
         except (ValueError, TypeError):
@@ -708,7 +747,7 @@ def _generate_issues(
                     field_key="probation_months",
                     old_value=current_state.get("probation_months"),
                     new_value=_serialize_value(raw_pm),
-                    allowed_actions=["correct_manually", "ignore"],
+                    allowed_actions=[IssueAction.MODIFY_VALUE.value, IssueAction.IGNORE.value],
                 )
             )
 
@@ -726,7 +765,7 @@ def _generate_issues(
                 message="入职日期为空。新员工仍会创建员工档案，"
                 "但不会创建任职记录。请导入后补充入职日期。",
                 field_key="hire_date",
-                allowed_actions=["skip", "add_manually", "ignore"],
+                allowed_actions=[IssueAction.SKIP_ROW.value, IssueAction.MODIFY_VALUE.value, IssueAction.IGNORE.value],
             )
         )
 
@@ -747,7 +786,7 @@ def _generate_issues(
                     message="该员工用工类型为正式，但缺少转正日期。"
                     "导入后请及时补充转正日期。",
                     field_key="regularization_date",
-                    allowed_actions=["add_manually", "ignore"],
+                    allowed_actions=[IssueAction.MODIFY_VALUE.value, IssueAction.IGNORE.value],
                 )
             )
 
@@ -774,7 +813,7 @@ def _generate_issues(
                             field_key="birth_date",
                             old_value=current_state.get("birth_date"),
                             new_value=_serialize_value(birth_date_raw),
-                            allowed_actions=["correct_manually", "ignore"],
+                            allowed_actions=[IssueAction.MODIFY_VALUE.value, IssueAction.IGNORE.value],
                         )
                     )
         except (ValueError, TypeError):
@@ -802,7 +841,7 @@ def _generate_issues(
                             field_key="hire_date",
                             old_value=current_state.get("hire_date"),
                             new_value=_serialize_value(hire_date_raw),
-                            allowed_actions=["correct_manually", "ignore"],
+                            allowed_actions=[IssueAction.MODIFY_VALUE.value, IssueAction.IGNORE.value],
                         )
                     )
         except (ValueError, TypeError):
@@ -821,7 +860,7 @@ def _generate_issues(
                     f"系统可能无法完全自动解析。",
                     field_key="raw_salary_text",
                     new_value=salary_text[:200],
-                    allowed_actions=["ignore", "correct_manually"],
+                    allowed_actions=[IssueAction.IGNORE.value, IssueAction.MODIFY_VALUE.value],
                 )
             )
 
@@ -852,7 +891,7 @@ def _generate_issues(
                     message=f"PDP 测评文本「{pdp_text[:100]}」看起来不符合预期的测评报告格式。",
                     field_key="pdp_result",
                     new_value=pdp_text[:200],
-                    allowed_actions=["ignore", "correct_manually"],
+                    allowed_actions=[IssueAction.IGNORE.value, IssueAction.MODIFY_VALUE.value],
                 )
             )
 

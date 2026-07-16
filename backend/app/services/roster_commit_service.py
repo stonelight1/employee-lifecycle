@@ -200,24 +200,44 @@ def commit_import(
 
     summary = {
         "total": len(rows),
-        "created": 0,
-        "updated": 0,
-        "skipped": 0,
-        "confirmation": 0,
+        "created_count": 0,
+        "updated_count": 0,
+        "unchanged_count": 0,
+        "skipped_count": 0,
+        "cooperation_skipped_count": 0,
+        "confirmation_count": 0,
+        "incomplete_profile_count": 0,
+        "employment_change_count": 0,
+        "compensation_count": 0,
+        "note_count": 0,
+        "failed_count": 0,
     }
 
     try:
         for row in rows:
+            action = _parse_planned_action(row)
             if _enum_value(row.row_status) == RosterRowStatus.SKIPPED.value:
                 _process_skip_row(db, row, operator)
-                summary["skipped"] += 1
+                summary["skipped_count"] += 1
+                if action.get("reason_code") == "REGION_COOPERATION":
+                    summary["cooperation_skipped_count"] += 1
+                continue
+
+            if _enum_value(row.row_status) == RosterRowStatus.UNCHANGED.value:
+                summary["unchanged_count"] += 1
+                row.row_status = RosterRowStatus.IMPORTED
+                db.flush()
                 continue
 
             if _enum_value(row.row_status) == RosterRowStatus.NEW.value:
                 result = _process_new_row(
                     db, row, batch_id, batch.mode, operator,
                 )
-                summary["created"] += 1
+                summary["created_count"] += 1
+                if result.get("action") == "created_incomplete":
+                    summary["incomplete_profile_count"] += 1
+                if result.get("confirmations_created", 0) > 0:
+                    summary["confirmation_count"] += result["confirmations_created"]
 
             elif _enum_value(row.row_status) in (
                 RosterRowStatus.UPDATE.value,
@@ -228,16 +248,22 @@ def commit_import(
                     db, row, employee_id, batch_id, batch.mode, operator,
                 )
                 if result.get("action") == "updated":
-                    summary["updated"] += 1
-                if result.get("confirmations_created", 0) > 0:
-                    summary["confirmation"] += result["confirmations_created"]
+                    summary["updated_count"] += 1
+                confirmations = result.get("confirmations_created", 0)
+                if confirmations > 0:
+                    summary["confirmation_count"] += confirmations
 
         # 更新批次为成功
         now = datetime.now()
         batch.batch_status = RosterBatchStatus.SUCCEEDED
         batch.completed_at = now
-        batch.imported_count = summary["created"] + summary["updated"]
-        batch.skipped_count = summary["skipped"]
+        batch.imported_count = summary["created_count"] + summary["updated_count"]
+        batch.skipped_count = summary["skipped_count"]
+        # 更新批次统计字段
+        batch.new_count = summary["created_count"]
+        batch.update_count = summary["updated_count"]
+        batch.unchanged_count = summary["unchanged_count"]
+        batch.confirmation_count = summary["confirmation_count"]
         db.flush()
 
     except Exception as e:
@@ -828,6 +854,16 @@ def _process_skip_row(
     """处理跳过的行 —— 仅标记状态，不做任何业务操作。"""
     row.row_status = RosterRowStatus.SKIPPED
     db.flush()
+
+
+def _parse_planned_action(row: RosterImportRow) -> dict:
+    """解析行的 planned_actions_json。"""
+    if not row.planned_actions_json:
+        return {}
+    try:
+        return json.loads(row.planned_actions_json) or {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
 
 
 # ============================================================
