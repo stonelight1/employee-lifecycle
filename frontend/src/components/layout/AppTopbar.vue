@@ -265,6 +265,7 @@ onUnmounted(() => {
   position: relative;
   max-width: 400px;
   width: 100%;
+  min-width: 220px;
 }
 .search-wrapper.employee-search {
   max-width: 280px;
@@ -322,6 +323,8 @@ onUnmounted(() => {
   font-weight: 500;
   cursor: pointer;
   transition: background 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .btn-add:hover {
   background: var(--color-primary-hover);

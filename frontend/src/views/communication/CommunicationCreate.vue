@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { get, post } from '@/api'
 import { useToast } from '@/composables/useToast'
+import PageHeader from '@/components/layout/PageHeader.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -58,10 +59,7 @@ async function handleSubmit() {
 
 <template>
   <div class="page">
-    <div class="page-intro">
-      <h1 class="page-title">{{ employeeName ? `沟通记录 - ${employeeName}` : '新增沟通记录' }}</h1>
-      <p class="page-subtitle">记录与员工的沟通内容</p>
-    </div>
+    <PageHeader :title="employeeName ? `沟通记录 - ${employeeName}` : '新增沟通记录'" subtitle="记录与员工的沟通内容" />
 
     <div class="card form-card">
       <div class="form-group">
@@ -116,7 +114,6 @@ async function handleSubmit() {
 </template>
 
 <style scoped>
-.page-intro { margin-bottom: 20px; }
 .form-card { max-width: 720px; padding: 24px; }
 .form-group { margin-bottom: 20px; }
 .form-label { display: block; font-size: var(--font-size-sm); font-weight: 500; margin-bottom: 6px; color: var(--color-text-secondary); }

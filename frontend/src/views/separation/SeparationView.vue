@@ -9,6 +9,7 @@ import { useConfirm } from '@/composables/useConfirm'
 import { employmentStatusMap, separationTypeMap, getStatusLabel } from '@/constants/status'
 import BaseBadge from '@/components/base/BaseBadge.vue'
 import BaseModal from '@/components/base/BaseModal.vue'
+import PageHeader from '@/components/layout/PageHeader.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -97,16 +98,7 @@ onMounted(loadData)
 
 <template>
   <div class="page">
-    <div class="page-intro">
-      <button class="back-link" @click="router.back()">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M19 12H5M12 19l-7-7 7-7" />
-        </svg>
-        返回
-      </button>
-      <h1 class="page-title">离职管理</h1>
-      <p class="page-subtitle">管理员工离职流程与记录</p>
-    </div>
+    <PageHeader title="离职管理" subtitle="管理员工离职流程与记录" show-back @back="router.back()" />
 
     <!-- 离职预览 -->
     <div class="card section-card" v-if="preview">
@@ -229,27 +221,6 @@ onMounted(loadData)
 </template>
 
 <style scoped>
-.page-intro {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-bottom: 20px;
-}
-.back-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: none;
-  border: none;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  cursor: pointer;
-  padding: 0;
-  width: fit-content;
-}
-.back-link:hover {
-  color: var(--color-primary);
-}
 .section-card {
   padding: 20px;
   margin-bottom: 16px;

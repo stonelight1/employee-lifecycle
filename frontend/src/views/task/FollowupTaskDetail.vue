@@ -8,6 +8,7 @@ import { formatDate } from '@/utils/date'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import BaseModal from '@/components/base/BaseModal.vue'
+import PageHeader from '@/components/layout/PageHeader.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -70,12 +71,7 @@ async function cancelTask() {
 
 <template>
   <div class="page">
-    <div class="page-intro">
-      <button class="back-link" @click="router.back()">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>
-        返回
-      </button>
-    </div>
+    <PageHeader :title="task?.task_name || '任务详情'" subtitle="查看和管理跟进任务详情" show-back @back="router.back()" />
 
     <div v-if="task" class="card section-card">
       <div class="flex justify-between items-center" style="margin-bottom: 16px;">
@@ -112,19 +108,6 @@ async function cancelTask() {
 </template>
 
 <style scoped>
-.page-intro { margin-bottom: 20px; }
-.back-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: none;
-  border: none;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  cursor: pointer;
-  padding: 0;
-}
-.back-link:hover { color: var(--color-primary); }
 .section-card { padding: 20px; }
 .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .info-item label { display: block; font-size: var(--font-size-xs); color: var(--color-text-tertiary); margin-bottom: 4px; }

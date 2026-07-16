@@ -6,11 +6,11 @@ import { formatDateTime } from '@/utils/date'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { getStatusLabel } from '@/constants/status'
-import BaseButton from '@/components/base/BaseButton.vue'
 import BaseBadge from '@/components/base/BaseBadge.vue'
 import BaseModal from '@/components/base/BaseModal.vue'
 import BaseEmpty from '@/components/base/BaseEmpty.vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
+import BaseButton from '@/components/base/BaseButton.vue'
 import { listBatches, getRollbackPreview, executeRollback, getFileDownloadUrl } from '@/services/rosterImportService'
 import type { BatchListItem } from '@/types/roster-import'
 
@@ -120,14 +120,10 @@ const totalPages = computed(() => Math.ceil(total.value / pageSize))
 
 <template>
   <div class="page">
-    <PageHeader
-      title="花名册导入"
-      subtitle="上传 Excel 花名册，批量导入和更新员工信息"
-    >
+    <PageHeader title="花名册导入" subtitle="上传 Excel 花名册，批量导入和更新员工信息">
       <template #actions>
         <BaseButton variant="primary" @click="goToNew">
-          <Upload :size="16" />
-          新建导入
+          <Upload :size="16" /> 新建导入
         </BaseButton>
       </template>
     </PageHeader>

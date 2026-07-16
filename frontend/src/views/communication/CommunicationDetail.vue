@@ -6,6 +6,8 @@ import { useToast } from '@/composables/useToast'
 import BaseModal from '@/components/base/BaseModal.vue'
 import { getStatusLabel, communicationTypeMap, riskMap } from '@/constants/status'
 import type { CommunicationItem, AiSummaryItem, RiskAssessmentItem, TextVersionItem } from '@/types'
+import PageHeader from '@/components/layout/PageHeader.vue'
+import BaseButton from '@/components/base/BaseButton.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -125,11 +127,12 @@ onMounted(loadData)
 
 <template>
   <div v-if="communication" class="page">
-    <div class="page-header">
-      <button class="btn-back" @click="router.back()">← 返回</button>
-      <h2>沟通记录 #{{ communication.id }}</h2>
-      <span class="tag">{{ statusLabels[communication.communication_status] || communication.communication_status }}</span>
-    </div>
+    <PageHeader :title="`沟通记录 #${communication.id}`" subtitle="查看沟通文本、AI 建议和风险审核">
+      <template #actions>
+        <span class="tag">{{ statusLabels[communication.communication_status] || communication.communication_status }}</span>
+        <BaseButton variant="secondary" @click="router.back()">返回</BaseButton>
+      </template>
+    </PageHeader>
 
     <!-- 基本信息 -->
     <div class="card">
@@ -286,9 +289,6 @@ onMounted(loadData)
 </template>
 
 <style scoped>
-.page-header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; background: #fff; padding: 16px 24px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06); }
-.btn-back { background: none; border: none; cursor: pointer; color: #409eff; font-size: 14px; }
-h2 { flex: 1; font-size: 18px; margin: 0; }
 .card { background: #fff; border-radius: 8px; padding: 20px 24px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06); }
 .section-title { font-size: 16px; font-weight: 600; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid #ebeef5; display: flex; justify-content: space-between; align-items: center; }
 .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }

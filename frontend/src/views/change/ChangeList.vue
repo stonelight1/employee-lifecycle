@@ -3,6 +3,8 @@ import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { get } from '@/api'
 import type { EmploymentChangeItem } from '@/types'
+import PageHeader from '@/components/layout/PageHeader.vue'
+import BaseButton from '@/components/base/BaseButton.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -44,11 +46,12 @@ onMounted(loadChanges)
 
 <template>
   <div class="page">
-    <div class="page-header">
-      <button class="btn-back" @click="router.back()">← 返回</button>
-      <h2>异动记录</h2>
-      <button class="btn btn-primary" @click="router.push(`/employments/${employmentId}/changes/create`)">新增异动</button>
-    </div>
+    <PageHeader title="异动记录" subtitle="查看并维护员工任职异动历史">
+      <template #actions>
+        <BaseButton variant="secondary" @click="router.back()">返回</BaseButton>
+        <BaseButton variant="primary" @click="router.push(`/employments/${employmentId}/changes/create`)">新增异动</BaseButton>
+      </template>
+    </PageHeader>
 
     <div class="card">
       <table v-if="changes.length > 0">
@@ -84,9 +87,6 @@ onMounted(loadChanges)
 </template>
 
 <style scoped>
-.page-header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; background: #fff; padding: 16px 24px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06); }
-.btn-back { background: none; border: none; cursor: pointer; color: #409eff; font-size: 14px; }
-h2 { flex: 1; font-size: 18px; margin: 0; }
 .card { background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06); overflow: hidden; }
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid #ebeef5; font-size: 14px; }

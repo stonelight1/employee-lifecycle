@@ -6,6 +6,7 @@ import { formatDate } from '@/utils/date'
 import { resolveLifecycleStage } from '@/utils/lifecycle'
 import LifecycleBadge from '@/components/business/LifecycleBadge.vue'
 import BaseEmpty from '@/components/base/BaseEmpty.vue'
+import PageHeader from '@/components/layout/PageHeader.vue'
 import dayjs from 'dayjs'
 
 const router = useRouter()
@@ -99,10 +100,7 @@ onMounted(loadRegularizationCandidates)
 
 <template>
   <div class="page">
-    <div class="page-intro">
-      <h1 class="page-title">转正管理</h1>
-      <p class="page-subtitle">查看即将转正、已超期和已完成转正的员工</p>
-    </div>
+    <PageHeader title="转正管理" subtitle="查看即将转正、已超期和已完成转正的员工" />
 
     <div v-if="loading" class="loading-state text-tertiary">加载中...</div>
 
@@ -178,9 +176,7 @@ onMounted(loadRegularizationCandidates)
 </template>
 
 <style scoped>
-.page-intro {
-  margin-bottom: 20px;
-}
+
 .regularization-sections {
   display: flex;
   flex-direction: column;

@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { get } from '@/api'
 import { confirmationModeMap, getStatusLabel } from '@/constants/status'
+import PageHeader from '@/components/layout/PageHeader.vue'
 
 const router = useRouter()
 const nodes = ref<any[]>([])
@@ -23,10 +24,7 @@ onMounted(async () => {
 
 <template>
   <div class="page">
-    <div class="page-intro">
-      <h1 class="page-title">节点配置</h1>
-      <p class="page-subtitle">配置员工跟进节点和流程</p>
-    </div>
+    <PageHeader title="节点配置" subtitle="配置员工跟进节点和流程" />
 
     <div class="card table-card">
       <table v-if="nodes.length > 0">
@@ -63,9 +61,7 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.page-intro {
-  margin-bottom: 20px;
-}
+
 .table-card {
   overflow: hidden;
 }

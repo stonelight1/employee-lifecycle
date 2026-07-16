@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { get } from '@/api'
 import type { EmploymentItem, FollowupTaskItem, CommunicationItem } from '@/types'
 import { getStatusLabel, employmentStatusMap, probationStatusMap, followupStatusMap, communicationStatusMap, communicationTypeMap } from '@/constants/status'
+import PageHeader from '@/components/layout/PageHeader.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -31,11 +32,8 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="detail">
-    <div class="detail-header">
-      <button class="btn-back" @click="router.push(`/employees/${employeeId}`)">← 返回员工</button>
-      <h2>任职详情</h2>
-    </div>
+  <div class="page">
+    <PageHeader title="任职详情" subtitle="查看员工任职详细信息和相关记录" show-back @back="router.push(`/employees/${employeeId}`)" />
 
     <div class="card" v-if="employment">
       <div class="section-title">基本信息</div>
@@ -85,22 +83,6 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.detail-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 20px;
-  background: #fff;
-  padding: 16px 24px;
-  border-radius: 8px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
-}
-.btn-back {
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: #409eff;
-}
 .card {
   background: #fff;
   border-radius: 8px;

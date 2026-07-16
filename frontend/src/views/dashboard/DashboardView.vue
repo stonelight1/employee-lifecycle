@@ -8,6 +8,8 @@ import { formatDate } from '@/utils/date'
 import { getPendingCount } from '@/services/hrConfirmationService'
 import BaseSkeleton from '@/components/base/BaseSkeleton.vue'
 import RiskBadge from '@/components/business/RiskBadge.vue'
+import PageHeader from '@/components/layout/PageHeader.vue'
+import BaseButton from '@/components/base/BaseButton.vue'
 import { AlertCircle, ClipboardList, Plus, Settings, Users } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -116,194 +118,209 @@ onMounted(loadDashboard)
       </div>
     </div>
 
-    <!-- 后端未连接 -->
-    <div v-else-if="backendStatus === 'disconnected'" class="welcome-section">
-      <div class="welcome-content">
-        <h1 class="welcome-title">未能连接到后端服务</h1>
-        <p class="welcome-subtitle">{{ errorMessage }}</p>
-        <div class="welcome-actions">
-          <button class="action-btn primary" @click="loadDashboard">重新连接</button>
-          <button class="action-btn secondary" @click="router.push('/employees')">前往员工中心</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 后端错误 -->
-    <div v-else-if="backendStatus === 'error' && !data" class="welcome-section">
-      <div class="welcome-content">
-        <h1 class="welcome-title">加载工作台数据时出错</h1>
-        <p class="welcome-subtitle">{{ errorMessage }}</p>
-        <div class="welcome-actions">
-          <button class="action-btn primary" @click="loadDashboard">重新加载</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 欢迎区 -->
-    <div v-else-if="data && !isEmpty" class="welcome-section">
-      <div class="welcome-content">
-        <h1 class="welcome-title">
-          早上好，今天有 <strong>{{ welcomeText }}</strong>
-        </h1>
-        <div class="welcome-actions">
-          <button class="action-btn secondary" @click="goToWorkItems()">
+    <!-- 非加载状态：显示标准页眉 -->
+    <template v-else>
+      <PageHeader title="工作台" subtitle="查看员工生命周期概况和今日重点事项">
+        <template #actions>
+          <BaseButton
+            v-if="backendStatus === 'disconnected'"
+            variant="secondary"
+            @click="router.push('/employees')"
+          >
+            前往员工中心
+          </BaseButton>
+          <BaseButton
+            v-if="backendStatus === 'disconnected'"
+            variant="primary"
+            @click="loadDashboard"
+          >
+            重新连接
+          </BaseButton>
+          <BaseButton
+            v-else-if="backendStatus === 'error' && !data"
+            variant="primary"
+            @click="loadDashboard"
+          >
+            重新加载
+          </BaseButton>
+          <BaseButton
+            v-else-if="data && !isEmpty"
+            variant="secondary"
+            @click="goToWorkItems()"
+          >
             查看全部事项
-          </button>
-        </div>
-      </div>
-    </div>
+          </BaseButton>
+        </template>
+      </PageHeader>
 
-    <!-- 有数据时展示指标 -->
-    <template v-if="data && !isEmpty">
-      <div class="metrics-grid">
-        <div class="metric-card" @click="goToEmployees()">
-          <div class="metric-info">
-            <div class="metric-value">{{ data.metrics.active_employee_count }}</div>
-            <div class="metric-label">在职员工</div>
-          </div>
-          <div class="metric-icon icon-employees">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
-          </div>
-        </div>
-        <div class="metric-card" @click="goToEmployees('PROBATION')">
-          <div class="metric-info">
-            <div class="metric-value">{{ data.metrics.probation_employee_count }}</div>
-            <div class="metric-label">试用期员工</div>
-          </div>
-          <div class="metric-icon icon-probation">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-          </div>
-        </div>
-        <div class="metric-card" @click="goToWorkItems()">
-          <div class="metric-info">
-            <div class="metric-value">{{ data.metrics.regularization_due_7d_count }}</div>
-            <div class="metric-label">7天内待转正</div>
-          </div>
-          <div class="metric-icon icon-regularize">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="16 12 12 8 8 12"/><line x1="12" y1="16" x2="12" y2="8"/></svg>
-          </div>
-        </div>
-        <div class="metric-card metric-overdue" @click="goToWorkItems()">
-          <div class="metric-info">
-            <div class="metric-value">{{ data.metrics.overdue_work_item_count }}</div>
-            <div class="metric-label">已逾期事项</div>
-          </div>
-          <div class="metric-icon icon-overdue">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-          </div>
-        </div>
+      <!-- 后端未连接 - 警告卡片 -->
+      <div v-if="backendStatus === 'disconnected'" class="card warning-card">
+        <p class="warning-text">{{ errorMessage }}</p>
       </div>
 
-      <!-- 两栏布局 -->
-      <div class="dashboard-columns">
-        <div class="column-left">
-          <!-- 待确认事项 -->
-          <div v-if="pendingConfirmationCount > 0" class="section-card">
-            <div class="section-card-header">
-              <h3>
-                待确认事项
-                <span class="confirm-count-badge">{{ pendingConfirmationCount }}</span>
-              </h3>
-              <button class="header-link" @click="router.push('/hr-confirmations')">处理</button>
+      <!-- 后端错误 - 错误卡片 -->
+      <div v-else-if="backendStatus === 'error' && !data" class="card warning-card">
+        <p class="warning-text">加载工作台数据时出错：{{ errorMessage }}</p>
+      </div>
+
+      <!-- 有数据时展示指标 -->
+      <template v-else-if="data && !isEmpty">
+        <!-- 问候与提醒卡片（替代原页眉问候） -->
+        <div class="greeting-card">
+          <AlertCircle :size="18" class="greeting-icon" />
+          <span class="greeting-text">{{ welcomeText }}</span>
+        </div>
+
+        <div class="metrics-grid">
+          <div class="metric-card" @click="goToEmployees()">
+            <div class="metric-info">
+              <div class="metric-value">{{ data.metrics.active_employee_count }}</div>
+              <div class="metric-label">在职员工</div>
             </div>
-            <div class="confirm-item-hint">
-              <AlertCircle :size="16" class="confirm-icon" />
-              <span>导入后仍有 {{ pendingConfirmationCount }} 条信息需要您确认</span>
+            <div class="metric-icon icon-employees">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
             </div>
           </div>
+          <div class="metric-card" @click="goToEmployees('PROBATION')">
+            <div class="metric-info">
+              <div class="metric-value">{{ data.metrics.probation_employee_count }}</div>
+              <div class="metric-label">试用期员工</div>
+            </div>
+            <div class="metric-icon icon-probation">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            </div>
+          </div>
+          <div class="metric-card" @click="goToWorkItems()">
+            <div class="metric-info">
+              <div class="metric-value">{{ data.metrics.regularization_due_7d_count }}</div>
+              <div class="metric-label">7天内待转正</div>
+            </div>
+            <div class="metric-icon icon-regularize">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="16 12 12 8 8 12"/><line x1="12" y1="16" x2="12" y2="8"/></svg>
+            </div>
+          </div>
+          <div class="metric-card metric-overdue" @click="goToWorkItems()">
+            <div class="metric-info">
+              <div class="metric-value">{{ data.metrics.overdue_work_item_count }}</div>
+              <div class="metric-label">已逾期事项</div>
+            </div>
+            <div class="metric-icon icon-overdue">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            </div>
+          </div>
+        </div>
 
-          <div class="section-card">
-            <div class="section-card-header">
-              <h3>今日重点工作</h3>
-              <button v-if="data.priority_work_items.length > 0" class="header-link" @click="goToWorkItems()">查看全部</button>
+        <!-- 两栏布局 -->
+        <div class="dashboard-columns">
+          <div class="column-left">
+            <!-- 待确认事项 -->
+            <div v-if="pendingConfirmationCount > 0" class="section-card">
+              <div class="section-card-header">
+                <h3>
+                  待确认事项
+                  <span class="confirm-count-badge">{{ pendingConfirmationCount }}</span>
+                </h3>
+                <button class="header-link" @click="router.push('/hr-confirmations')">处理</button>
+              </div>
+              <div class="confirm-item-hint">
+                <AlertCircle :size="16" class="confirm-icon" />
+                <span>导入后仍有 {{ pendingConfirmationCount }} 条信息需要您确认</span>
+              </div>
             </div>
-            <div v-if="data.priority_work_items.length === 0" class="section-empty text-tertiary">
-              当前没有待处理事项
-            </div>
-            <div v-else class="work-items-list">
-              <div v-for="item in data.priority_work_items" :key="item.id" class="work-item-row" :class="{ 'is-overdue': item.overdue_days > 0 }">
-                <div class="work-item-left">
-                  <div class="work-item-title">
-                    <span v-if="item.overdue_days > 0" class="overdue-tag">逾期{{ item.overdue_days }}天</span>
-                    <span>{{ item.title }}</span>
+
+            <div class="section-card">
+              <div class="section-card-header">
+                <h3>今日重点工作</h3>
+                <button v-if="data.priority_work_items.length > 0" class="header-link" @click="goToWorkItems()">查看全部</button>
+              </div>
+              <div v-if="data.priority_work_items.length === 0" class="section-empty text-tertiary">
+                当前没有待处理事项
+              </div>
+              <div v-else class="work-items-list">
+                <div v-for="item in data.priority_work_items" :key="item.id" class="work-item-row" :class="{ 'is-overdue': item.overdue_days > 0 }">
+                  <div class="work-item-left">
+                    <div class="work-item-title">
+                      <span v-if="item.overdue_days > 0" class="overdue-tag">逾期{{ item.overdue_days }}天</span>
+                      <span>{{ item.title }}</span>
+                    </div>
+                    <div v-if="item.employee_name" class="work-item-employee text-xs text-tertiary">
+                      {{ item.employee_name }}{{ item.department ? ' · ' + item.department : '' }}
+                    </div>
                   </div>
-                  <div v-if="item.employee_name" class="work-item-employee text-xs text-tertiary">
-                    {{ item.employee_name }}{{ item.department ? ' · ' + item.department : '' }}
+                  <div class="work-item-right">
+                    <RiskBadge v-if="item.risk_level && item.risk_level !== 'NONE'" :level="item.risk_level" />
                   </div>
                 </div>
-                <div class="work-item-right">
-                  <RiskBadge v-if="item.risk_level && item.risk_level !== 'NONE'" :level="item.risk_level" />
+              </div>
+            </div>
+          </div>
+
+          <div class="column-right">
+            <div class="section-card">
+              <div class="section-card-header">
+                <h3>生命周期分布</h3>
+              </div>
+              <div v-if="data.lifecycle_distribution.length === 0" class="section-empty text-tertiary">
+                暂无员工数据
+              </div>
+              <div v-else class="distribution-list">
+                <div v-for="dist in data.lifecycle_distribution" :key="dist.stage" class="distribution-row" @click="goToEmployees(dist.stage)">
+                  <div class="dist-label">
+                    <span class="dist-dot" :style="{ background: (lifecycleStageMap[dist.stage] || {}).color || '#98A2B3' }" />
+                    <span class="text-sm">{{ (lifecycleStageMap[dist.stage] || {}).label || dist.stage }}</span>
+                  </div>
+                  <div class="dist-bar-wrap">
+                    <div class="dist-bar" :style="{ width: totalDistribution > 0 ? (dist.count / totalDistribution * 100) + '%' : '0%', background: (lifecycleStageMap[dist.stage] || {}).color || '#98A2B3' }" />
+                  </div>
+                  <span class="dist-count">{{ dist.count }}</span>
                 </div>
               </div>
             </div>
           </div>
         </div>
+      </template>
 
-        <div class="column-right">
-          <div class="section-card">
-            <div class="section-card-header">
-              <h3>生命周期分布</h3>
-            </div>
-            <div v-if="data.lifecycle_distribution.length === 0" class="section-empty text-tertiary">
-              暂无员工数据
-            </div>
-            <div v-else class="distribution-list">
-              <div v-for="dist in data.lifecycle_distribution" :key="dist.stage" class="distribution-row" @click="goToEmployees(dist.stage)">
-                <div class="dist-label">
-                  <span class="dist-dot" :style="{ background: (lifecycleStageMap[dist.stage] || {}).color || '#98A2B3' }" />
-                  <span class="text-sm">{{ (lifecycleStageMap[dist.stage] || {}).label || dist.stage }}</span>
-                </div>
-                <div class="dist-bar-wrap">
-                  <div class="dist-bar" :style="{ width: totalDistribution > 0 ? (dist.count / totalDistribution * 100) + '%' : '0%', background: (lifecycleStageMap[dist.stage] || {}).color || '#98A2B3' }" />
-                </div>
-                <span class="dist-count">{{ dist.count }}</span>
-              </div>
+      <!-- 空数据欢迎页 -->
+      <main v-else-if="data && isEmpty && backendStatus === 'connected'" class="dashboard-content">
+        <section class="dashboard-empty" aria-labelledby="dashboard-empty-title">
+          <div class="dashboard-empty__content">
+            <p class="dashboard-empty__eyebrow">员工生命周期管理</p>
+            <h1 id="dashboard-empty-title" class="dashboard-empty__title">开始搭建您的员工管理体系</h1>
+            <p class="dashboard-empty__desc">
+              创建员工档案后，系统将自动管理员工的入职、试用期、转正、异动和离职流程。
+            </p>
+            <RouterLink class="action-btn primary dashboard-empty__primary" to="/employees/new">
+              <Plus :size="16" aria-hidden="true" />
+              新增员工
+            </RouterLink>
+
+            <div class="dashboard-empty__shortcuts" aria-label="快捷入口">
+              <RouterLink class="dashboard-empty__shortcut" to="/employees">
+                <span class="dashboard-empty__shortcut-icon" aria-hidden="true">
+                  <Users :size="22" />
+                </span>
+                <span class="dashboard-empty__shortcut-title">员工中心</span>
+                <span class="dashboard-empty__shortcut-desc">查看和管理员工档案</span>
+              </RouterLink>
+              <RouterLink class="dashboard-empty__shortcut" to="/followup-nodes">
+                <span class="dashboard-empty__shortcut-icon" aria-hidden="true">
+                  <Settings :size="22" />
+                </span>
+                <span class="dashboard-empty__shortcut-title">节点配置</span>
+                <span class="dashboard-empty__shortcut-desc">配置试用期跟进节点</span>
+              </RouterLink>
+              <RouterLink class="dashboard-empty__shortcut" to="/work-items">
+                <span class="dashboard-empty__shortcut-icon" aria-hidden="true">
+                  <ClipboardList :size="22" />
+                </span>
+                <span class="dashboard-empty__shortcut-title">工作事项</span>
+                <span class="dashboard-empty__shortcut-desc">查看当前需要处理的事项</span>
+              </RouterLink>
             </div>
           </div>
-        </div>
-      </div>
+        </section>
+      </main>
     </template>
-
-    <!-- 空数据欢迎页 -->
-    <main v-else-if="data && isEmpty && backendStatus === 'connected'" class="dashboard-content">
-      <section class="dashboard-empty" aria-labelledby="dashboard-empty-title">
-        <div class="dashboard-empty__content">
-          <p class="dashboard-empty__eyebrow">员工生命周期管理</p>
-          <h1 id="dashboard-empty-title" class="dashboard-empty__title">开始搭建您的员工管理体系</h1>
-          <p class="dashboard-empty__desc">
-            创建员工档案后，系统将自动管理员工的入职、试用期、转正、异动和离职流程。
-          </p>
-          <RouterLink class="action-btn primary dashboard-empty__primary" to="/employees/new">
-            <Plus :size="16" aria-hidden="true" />
-            新增员工
-          </RouterLink>
-
-          <div class="dashboard-empty__shortcuts" aria-label="快捷入口">
-            <RouterLink class="dashboard-empty__shortcut" to="/employees">
-              <span class="dashboard-empty__shortcut-icon" aria-hidden="true">
-                <Users :size="22" />
-              </span>
-              <span class="dashboard-empty__shortcut-title">员工中心</span>
-              <span class="dashboard-empty__shortcut-desc">查看和管理员工档案</span>
-            </RouterLink>
-            <RouterLink class="dashboard-empty__shortcut" to="/followup-nodes">
-              <span class="dashboard-empty__shortcut-icon" aria-hidden="true">
-                <Settings :size="22" />
-              </span>
-              <span class="dashboard-empty__shortcut-title">节点配置</span>
-              <span class="dashboard-empty__shortcut-desc">配置试用期跟进节点</span>
-            </RouterLink>
-            <RouterLink class="dashboard-empty__shortcut" to="/work-items">
-              <span class="dashboard-empty__shortcut-icon" aria-hidden="true">
-                <ClipboardList :size="22" />
-              </span>
-              <span class="dashboard-empty__shortcut-title">工作事项</span>
-              <span class="dashboard-empty__shortcut-desc">查看当前需要处理的事项</span>
-            </RouterLink>
-          </div>
-        </div>
-      </section>
-    </main>
   </div>
 </template>
 
@@ -317,60 +334,39 @@ onMounted(loadDashboard)
   width: calc(100vw - var(--sidebar-width) - 64px);
 }
 
-/* Welcome */
-.welcome-section {
-  margin-bottom: 24px;
-}
-.welcome-content {
-  padding: 24px 0;
-}
-.welcome-title {
-  font-size: 22px;
-  font-weight: 500;
-  color: var(--color-text-primary);
-  margin-bottom: 8px;
-  line-height: 1.4;
-}
-.welcome-title strong {
-  color: var(--color-primary);
-  font-weight: 600;
-}
-.welcome-subtitle {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-secondary);
-  margin-bottom: 16px;
-}
-.welcome-actions {
+/* 问候与提醒卡片 */
+.greeting-card {
   display: flex;
-  gap: 10px;
-}
-.action-btn {
-  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 8px 18px;
-  border-radius: var(--radius-sm);
-  font-size: var(--font-size-sm);
-  font-weight: 500;
-  cursor: pointer;
-  border: none;
-  text-decoration: none;
-}
-.action-btn.primary {
-  background: var(--color-primary);
-  color: #fff;
-}
-.action-btn.primary:hover {
-  background: var(--color-primary-hover);
-}
-.action-btn.secondary {
+  gap: 10px;
+  padding: 14px 20px;
+  margin-bottom: 24px;
   background: var(--color-surface);
-  color: var(--color-text-primary);
   border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
 }
-.action-btn.secondary:hover {
-  background: var(--color-bg);
+.greeting-icon {
+  flex-shrink: 0;
+  color: var(--color-primary);
+}
+.greeting-text {
+  font-size: var(--font-size-base);
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+/* 警告和错误卡片 */
+.warning-card {
+  padding: 16px 20px;
+  margin-bottom: 24px;
+  background: var(--color-danger-soft);
+  border-color: var(--color-danger);
+}
+.warning-text {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-danger);
+  line-height: 1.5;
 }
 
 /* Metrics */

@@ -7,6 +7,7 @@ import { getStatusLabel, followupStatusMap, riskMap } from '@/constants/status'
 import RiskBadge from '@/components/business/RiskBadge.vue'
 import ProbationProgress from '@/components/business/ProbationProgress.vue'
 import BaseEmpty from '@/components/base/BaseEmpty.vue'
+import PageHeader from '@/components/layout/PageHeader.vue'
 import {
   ClipboardCheck,
   ChevronDown,
@@ -124,10 +125,7 @@ function toggleExpand(empId: number) {
 
 <template>
   <div class="page">
-    <div class="page-intro">
-      <h1 class="page-title">试用期中心</h1>
-      <p class="page-subtitle">集中管理试用期员工、跟进节点和评估记录</p>
-    </div>
+    <PageHeader title="试用期中心" subtitle="集中管理试用期员工、跟进节点和评估记录" />
 
     <div v-if="loading" class="loading-state text-tertiary">加载中...</div>
 
@@ -237,9 +235,6 @@ function toggleExpand(empId: number) {
 </template>
 
 <style scoped>
-.page-intro {
-  margin-bottom: 20px;
-}
 
 .employee-cards {
   display: grid;

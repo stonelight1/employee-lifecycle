@@ -6,6 +6,7 @@ import { formatDate } from '@/utils/date'
 import { changeTypeMap, separationTypeMap, getStatusLabel } from '@/constants/status'
 import ChangeDiffPanel from '@/components/business/ChangeDiffPanel.vue'
 import BaseEmpty from '@/components/base/BaseEmpty.vue'
+import PageHeader from '@/components/layout/PageHeader.vue'
 
 const router = useRouter()
 const changes = ref<any[]>([])
@@ -96,10 +97,7 @@ onMounted(loadData)
 
 <template>
   <div class="page">
-    <div class="page-intro">
-      <h1 class="page-title">异动与离职</h1>
-      <p class="page-subtitle">查看员工的异动记录和离职流程</p>
-    </div>
+    <PageHeader title="异动与离职" subtitle="查看员工的异动记录和离职流程" />
 
     <div class="tabs-bar">
       <button class="tab-btn" :class="{ active: activeTab === 'changes' }" @click="activeTab = 'changes'">
@@ -190,9 +188,7 @@ onMounted(loadData)
 </template>
 
 <style scoped>
-.page-intro {
-  margin-bottom: 20px;
-}
+
 .tabs-bar {
   display: flex;
   gap: 8px;

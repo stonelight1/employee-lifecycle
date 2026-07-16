@@ -8,6 +8,8 @@ import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import BaseModal from '@/components/base/BaseModal.vue'
 import BaseEmpty from '@/components/base/BaseEmpty.vue'
+import BaseButton from '@/components/base/BaseButton.vue'
+import PageHeader from '@/components/layout/PageHeader.vue'
 import EmployeeAvatar from '@/components/business/EmployeeAvatar.vue'
 import LifecycleBadge from '@/components/business/LifecycleBadge.vue'
 import RiskBadge from '@/components/business/RiskBadge.vue'
@@ -162,24 +164,22 @@ function maskIdCard(idCard?: string | null): string {
 <template>
   <div class="page" @click="closeMenu">
     <!-- 页面标题 -->
-    <div class="page-intro">
-      <h1 class="page-title">员工中心</h1>
-      <p class="page-subtitle">统一查看员工状态、试用期进度和下一步事项</p>
-      <div class="page-actions">
-        <button class="action-btn primary" @click="router.push('/roster-imports/new?from=employees')">
+    <PageHeader title="员工中心" subtitle="统一查看员工状态、试用期进度和下一步事项">
+      <template #actions>
+        <BaseButton variant="primary" @click="router.push('/roster-imports/new?from=employees')">
           <Upload :size="16" /> 导入花名册
-        </button>
-        <button class="action-btn" @click="router.push('/employees/new')">
+        </BaseButton>
+        <BaseButton variant="secondary" @click="router.push('/employees/new')">
           <Plus :size="16" /> 新增员工
-        </button>
-      </div>
-    </div>
+        </BaseButton>
+      </template>
+    </PageHeader>
 
     <!-- 错误状态 -->
     <div v-if="error && !loading" class="card error-card">
       <div class="error-message">
         <p>员工列表加载失败</p>
-        <button class="action-btn" @click="loadEmployees()">重新加载</button>
+        <BaseButton variant="primary" @click="loadEmployees()">重新加载</BaseButton>
       </div>
     </div>
 
@@ -467,59 +467,6 @@ function maskIdCard(idCard?: string | null): string {
 </template>
 
 <style scoped>
-/* ===== 页面布局 ===== */
-.page-intro {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-  margin-bottom: 20px;
-}
-.page-intro h1 {
-  flex: 0 0 auto;
-  margin: 0;
-  font-size: var(--font-size-lg);
-  font-weight: 600;
-  color: var(--color-text-primary);
-  letter-spacing: -0.01em;
-}
-.page-intro p {
-  flex: 1 1 auto;
-  margin: 0;
-  color: var(--color-text-tertiary);
-  font-size: var(--font-size-sm);
-}
-.page-actions {
-  display: flex;
-  gap: 8px;
-  flex: 0 0 auto;
-}
-.action-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 16px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: var(--color-surface, #fff);
-  cursor: pointer;
-  font-size: var(--font-size-sm);
-  font-weight: 500;
-  color: var(--color-text-primary);
-  transition: all 0.15s;
-}
-.action-btn.primary {
-  background: var(--color-primary, #4F46E5);
-  color: #fff;
-  border-color: var(--color-primary);
-}
-.action-btn:hover {
-  border-color: var(--color-primary);
-}
-.action-btn.primary:hover {
-  opacity: 0.92;
-}
-
 /* ===== 错误状态 ===== */
 .error-card {
   padding: 40px;

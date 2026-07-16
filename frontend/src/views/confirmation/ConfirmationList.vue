@@ -9,9 +9,8 @@ import { useConfirm } from '@/composables/useConfirm'
 import BaseBadge from '@/components/base/BaseBadge.vue'
 import BaseEmpty from '@/components/base/BaseEmpty.vue'
 import BaseSkeleton from '@/components/base/BaseSkeleton.vue'
-import BaseButton from '@/components/base/BaseButton.vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
-import { Check, X, EyeOff, ArrowLeft, AlertCircle, CreditCard, User } from 'lucide-vue-next'
+import { Check, X, EyeOff, AlertCircle, CreditCard, User } from 'lucide-vue-next'
 
 const router = useRouter()
 const { showToast } = useToast()
@@ -128,12 +127,7 @@ onMounted(loadData)
 
 <template>
   <div class="confirmation-page">
-    <PageHeader
-      title="待确认事项"
-      :subtitle="pendingCount > 0 ? `${pendingCount} 条待处理` : ''"
-      :show-back="true"
-      @back="router.push('/dashboard')"
-    />
+    <PageHeader title="待确认事项" :subtitle="pendingCount > 0 ? `${pendingCount} 条待处理` : '查看需要确认的业务操作'" />
 
     <!-- 筛选 -->
     <div class="filter-tabs">

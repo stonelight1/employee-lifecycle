@@ -3,6 +3,8 @@ import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { get, post, patch } from '@/api'
 import type { EmployeeItem } from '@/types'
+import PageHeader from '@/components/layout/PageHeader.vue'
+import BaseButton from '@/components/base/BaseButton.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -61,10 +63,11 @@ async function handleSubmit() {
 
 <template>
   <div class="page">
-    <div class="page-header">
-      <button class="btn-back" @click="router.back()">← 返回</button>
-      <h2>{{ isEdit ? '编辑员工' : '新增员工' }}</h2>
-    </div>
+    <PageHeader :title="isEdit ? '编辑员工' : '新增员工'" subtitle="维护员工基础档案信息">
+      <template #actions>
+        <BaseButton variant="secondary" @click="router.back()">返回</BaseButton>
+      </template>
+    </PageHeader>
 
     <div class="card">
       <div v-if="error" class="error-msg">{{ error }}</div>
@@ -101,18 +104,6 @@ async function handleSubmit() {
 </template>
 
 <style scoped>
-.page-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 20px;
-  background: #fff;
-  padding: 16px 24px;
-  border-radius: 8px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
-}
-.btn-back { background: none; border: none; cursor: pointer; color: #409eff; font-size: 14px; }
-h2 { flex: 1; font-size: 18px; margin: 0; }
 .card { background: #fff; border-radius: 8px; padding: 24px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06); max-width: 600px; }
 .error-msg { background: #fef0f0; color: #f56c6c; padding: 10px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
 .form-group { margin-bottom: 16px; }

@@ -4,6 +4,7 @@ import { get, post } from '@/api'
 import type { TodoItem } from '@/types'
 import { formatDate, formatRelativeDate } from '@/utils/date'
 import { useToast } from '@/composables/useToast'
+import PageHeader from '@/components/layout/PageHeader.vue'
 import { getStatusLabel, todoStatusMap } from '@/constants/status'
 
 const { showToast } = useToast()
@@ -35,10 +36,7 @@ async function handleComplete(id: number) {
 
 <template>
   <div class="page">
-    <div class="page-intro">
-      <h1 class="page-title">待办事项</h1>
-      <p class="page-subtitle">管理需要处理的待办事项</p>
-    </div>
+    <PageHeader title="待办事项" subtitle="管理需要处理的待办事项" />
     <div class="card table-card">
       <table v-if="todos.length > 0">
         <thead>
@@ -69,7 +67,6 @@ async function handleComplete(id: number) {
 </template>
 
 <style scoped>
-.page-intro { margin-bottom: 20px; }
 .table-card { overflow: hidden; }
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: 10px 16px; text-align: left; border-bottom: 1px solid var(--color-border); font-size: var(--font-size-sm); }

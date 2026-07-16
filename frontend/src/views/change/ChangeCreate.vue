@@ -7,6 +7,7 @@ import { useToast } from '@/composables/useToast'
 import { formatDate } from '@/utils/date'
 import { changeTypeMap, getStatusLabel } from '@/constants/status'
 import ChangeDiffPanel from '@/components/business/ChangeDiffPanel.vue'
+import PageHeader from '@/components/layout/PageHeader.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -134,13 +135,7 @@ onMounted(loadData)
 
 <template>
   <div class="page">
-    <div class="page-intro">
-      <button class="back-link" @click="router.push(`/employments/${employmentId}/changes`)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>
-        返回列表
-      </button>
-      <h1 class="page-title">{{ pageTitle }}</h1>
-    </div>
+    <PageHeader :title="pageTitle" subtitle="管理员工任职异动信息" show-back @back="router.push(`/employments/${employmentId}/changes`)" />
 
     <!-- Current info -->
     <div class="card section-card" v-if="currentEmployment">
@@ -197,25 +192,6 @@ onMounted(loadData)
 </template>
 
 <style scoped>
-.page-intro {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-bottom: 20px;
-}
-.back-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: none;
-  border: none;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  cursor: pointer;
-  padding: 0;
-  width: fit-content;
-}
-.back-link:hover { color: var(--color-primary); }
 .section-card { padding: 20px; margin-bottom: 16px; }
 .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .info-item label { display: block; font-size: var(--font-size-xs); color: var(--color-text-tertiary); margin-bottom: 4px; }

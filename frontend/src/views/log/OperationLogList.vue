@@ -4,6 +4,7 @@ import { get } from '@/api'
 import type { LogItem } from '@/types'
 import { formatDateTime } from '@/utils/date'
 import { getStatusLabel, operationObjectTypeMap } from '@/constants/status'
+import PageHeader from '@/components/layout/PageHeader.vue'
 
 const logs = ref<LogItem[]>([])
 const loading = ref(false)
@@ -28,10 +29,7 @@ onMounted(async () => {
 
 <template>
   <div class="page">
-    <div class="page-intro">
-      <h1 class="page-title">操作日志</h1>
-      <p class="page-subtitle">系统操作审计记录</p>
-    </div>
+    <PageHeader title="操作日志" subtitle="系统操作审计记录" />
     <div class="card table-card">
       <table v-if="logs.length > 0">
         <thead>
@@ -60,7 +58,6 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.page-intro { margin-bottom: 20px; }
 .table-card { overflow: hidden; }
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: 10px 16px; text-align: left; border-bottom: 1px solid var(--color-border); font-size: var(--font-size-sm); }

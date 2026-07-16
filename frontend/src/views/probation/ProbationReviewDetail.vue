@@ -5,6 +5,8 @@ import { get, post, patch } from '@/api'
 import { useToast } from '@/composables/useToast'
 import { getStatusLabel, reviewStatusMap, reviewStageMap } from '@/constants/status'
 import type { ProbationReviewItem, FollowupTaskItem, CommunicationItem } from '@/types'
+import PageHeader from '@/components/layout/PageHeader.vue'
+import BaseButton from '@/components/base/BaseButton.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -111,10 +113,11 @@ onMounted(() => {
 
 <template>
   <div class="page">
-    <div class="page-header">
-      <button class="btn-back" @click="router.push(`/employments/${employmentId}/probation-reviews`)">← 返回列表</button>
-      <h2>{{ pageTitle }}</h2>
-    </div>
+    <PageHeader :title="pageTitle" subtitle="填写试用期评估内容、员工反馈和建议">
+      <template #actions>
+        <BaseButton variant="secondary" @click="router.push(`/employments/${employmentId}/probation-reviews`)">返回列表</BaseButton>
+      </template>
+    </PageHeader>
 
     <div class="card">
       <div class="section-title">评估信息</div>
@@ -172,9 +175,6 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.page-header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; background: #fff; padding: 16px 24px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06); }
-.btn-back { background: none; border: none; cursor: pointer; color: #409eff; font-size: 14px; }
-h2 { flex: 1; font-size: 18px; margin: 0; }
 .card { background: #fff; border-radius: 8px; padding: 20px 24px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06); }
 .section-title { font-size: 16px; font-weight: 600; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid #ebeef5; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }

@@ -12,6 +12,7 @@ import { useToast } from '@/composables/useToast'
 import { formatDate } from '@/utils/date'
 import RiskBadge from '@/components/business/RiskBadge.vue'
 import BaseEmpty from '@/components/base/BaseEmpty.vue'
+import PageHeader from '@/components/layout/PageHeader.vue'
 import dayjs from 'dayjs'
 
 const router = useRouter()
@@ -148,10 +149,7 @@ onMounted(loadItems)
 
 <template>
   <div class="page">
-    <div class="page-intro">
-      <h1 class="page-title">工作事项</h1>
-      <p class="page-subtitle">集中处理跟进、待办和员工关键节点</p>
-    </div>
+    <PageHeader title="工作事项" subtitle="集中处理跟进、待办和员工关键节点" />
 
     <!-- Tabs -->
     <div class="tabs-bar">
@@ -327,9 +325,6 @@ onMounted(loadItems)
 </template>
 
 <style scoped>
-.page-intro {
-  margin-bottom: 20px;
-}
 
 .tabs-bar {
   display: flex;
