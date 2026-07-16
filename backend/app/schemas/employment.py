@@ -59,6 +59,13 @@ class EmploymentResponse(BaseModel):
     deleted_by: Optional[str] = None
 
 
+class EmploymentListResponse(BaseModel):
+    """员工任职列表响应。"""
+
+    items: list[EmploymentResponse]
+    total: int
+
+
 class DateChangeTaskItem(BaseModel):
     """日期修改预览中的单个任务项。"""
 

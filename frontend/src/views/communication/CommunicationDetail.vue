@@ -2,11 +2,14 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { get, post, put, patch } from '@/api'
+import { useToast } from '@/composables/useToast'
+import BaseModal from '@/components/base/BaseModal.vue'
 import type { CommunicationItem, AiSummaryItem, RiskAssessmentItem, TextVersionItem } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
 const commId = Number(route.params.id)
+const { showToast } = useToast()
 
 const communication = ref<CommunicationItem | null>(null)
 const aiSummaries = ref<AiSummaryItem[]>([])
@@ -15,6 +18,10 @@ const textVersions = ref<TextVersionItem[]>([])
 const loading = ref(false)
 const generatingAi = ref(false)
 const showTextVersions = ref(false)
+const showRiskReviewModal = ref(false)
+const reviewingRisk = ref(false)
+const pendingRiskAction = ref<'confirm' | 'modify' | 'reject' | null>(null)
+const riskReviewComment = ref('')
 
 const activeAiSummary = computed(() => aiSummaries.value.find(a => a.is_current && !a.is_stale && a.summary_status === 'SUCCEEDED'))
 const staleAiSummaries = computed(() => aiSummaries.value.filter(a => a.is_stale || a.summary_status !== 'SUCCEEDED'))
@@ -43,11 +50,11 @@ async function loadData() {
 
 async function generateAi() {
   if (!communication.value?.current_text_version_id) {
-    alert('当前无文本版本，请先保存沟通文本')
+    showToast({ type: 'warning', message: '当前无文本版本，请先保存沟通文本' })
     return
   }
   if (communication.value.communication_status === 'DRAFT') {
-    alert('草稿状态无法生成 AI，请先完成沟通记录')
+    showToast({ type: 'warning', message: '草稿状态无法生成 AI，请先完成沟通记录' })
     return
   }
   generatingAi.value = true
@@ -57,11 +64,11 @@ async function generateAi() {
       request_id: `req-${Date.now()}`,
     })
     if (res.success) {
-      alert('AI 生成成功')
+      showToast({ type: 'success', message: 'AI 生成成功' })
       await loadData()
     }
   } catch (e: any) {
-    alert(e.message || 'AI 生成失败')
+    showToast({ type: 'error', message: e.message || 'AI 生成失败' })
   } finally {
     generatingAi.value = false
   }
@@ -69,20 +76,29 @@ async function generateAi() {
 
 async function handleRiskReview(action: string) {
   if (!currentRisk.value) return
+  pendingRiskAction.value = action as 'confirm' | 'modify' | 'reject'
+  riskReviewComment.value = ''
+  showRiskReviewModal.value = true
+}
+
+async function submitRiskReview() {
+  if (!currentRisk.value || !pendingRiskAction.value) return
   const riskId = currentRisk.value.id
-  const actionLabel = action === 'confirm' ? '确认' : action === 'modify' ? '修改意见' : '驳回原因'
-  const comment = prompt('请输入' + actionLabel + '（可选）：')
+  reviewingRisk.value = true
   try {
-    const url = '/risk-assessments/' + riskId + '/' + action
+    const url = '/risk-assessments/' + riskId + '/' + pendingRiskAction.value
     const res = await post(url, {
-      hr_comment: comment || null,
+      hr_comment: riskReviewComment.value.trim() || null,
     })
     if (res.success) {
-      alert('操作成功')
+      showToast({ type: 'success', message: '操作成功' })
+      showRiskReviewModal.value = false
       await loadData()
     }
   } catch (e: any) {
-    alert(e.message || '操作失败')
+    showToast({ type: 'error', message: e.message || '操作失败' })
+  } finally {
+    reviewingRisk.value = false
   }
 }
 
@@ -95,6 +111,12 @@ const statusLabels: Record<string, string> = {
   DRAFT: '草稿', COMPLETED: '已完成', VOIDED: '已作废',
   PROCESSING: '处理中', SUCCEEDED: '成功', FAILED: '失败', CANCELLED: '已取消',
   PENDING_REVIEW: '待审核', CONFIRMED: '已确认', MODIFIED: '已修改', REJECTED: '已驳回',
+}
+
+const riskActionLabels: Record<string, string> = {
+  confirm: '确认风险建议',
+  modify: '修改风险建议',
+  reject: '驳回风险建议',
 }
 
 onMounted(loadData)
@@ -234,6 +256,32 @@ onMounted(loadData)
     </div>
   </div>
   <div v-else class="loading">加载中...</div>
+
+  <BaseModal
+    :show="showRiskReviewModal"
+    :title="pendingRiskAction ? riskActionLabels[pendingRiskAction] : '审核风险建议'"
+    :confirm-text="pendingRiskAction === 'reject' ? '确认驳回' : '提交'"
+    cancel-text="取消"
+    :danger="pendingRiskAction === 'reject'"
+    :loading="reviewingRisk"
+    @confirm="submitRiskReview"
+    @cancel="showRiskReviewModal = false"
+  >
+    <template #message>
+      <div class="review-modal-content">
+        <p class="review-modal-tip">可填写本次审核意见，系统会随风险审核记录一并保存。</p>
+        <label class="review-comment-label" for="risk-review-comment">审核意见</label>
+        <textarea
+          id="risk-review-comment"
+          v-model="riskReviewComment"
+          class="review-comment-input"
+          rows="4"
+          maxlength="500"
+          placeholder="请输入审核意见（可选）"
+        />
+      </div>
+    </template>
+  </BaseModal>
 </template>
 
 <style scoped>
@@ -285,4 +333,21 @@ h2 { flex: 1; font-size: 18px; margin: 0; }
 .risk-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
 .risk-detail { padding: 8px 12px; background: #f9f9f9; border-radius: 4px; margin-bottom: 8px; }
 .risk-detail label { font-size: 12px; color: #909399; display: block; margin-bottom: 4px; }
+.review-modal-content { display: flex; flex-direction: column; gap: 8px; }
+.review-modal-tip { margin: 0; color: var(--color-text-secondary); }
+.review-comment-label { font-size: 12px; color: var(--color-text-secondary); }
+.review-comment-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font: inherit;
+  resize: vertical;
+}
+.review-comment-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-soft);
+}
 </style>

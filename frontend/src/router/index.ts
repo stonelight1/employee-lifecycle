@@ -3,7 +3,19 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 const routes: RouteRecordRaw[] = [
   {
     path: '/',
-    redirect: '/employees',
+    redirect: '/dashboard',
+  },
+  // 工作台
+  {
+    path: '/dashboard',
+    name: 'Dashboard',
+    component: () => import('@/views/dashboard/DashboardView.vue'),
+  },
+  // 工作事项
+  {
+    path: '/work-items',
+    name: 'WorkItemCenter',
+    component: () => import('@/views/work/WorkItemCenter.vue'),
   },
   // 员工
   {
@@ -35,6 +47,24 @@ const routes: RouteRecordRaw[] = [
     path: '/employees/:id/employments/:employmentId',
     name: 'EmploymentDetail',
     component: () => import('@/views/employee/EmploymentDetail.vue'),
+  },
+  // 试用期中心
+  {
+    path: '/probation',
+    name: 'ProbationCenter',
+    component: () => import('@/views/probation/ProbationCenter.vue'),
+  },
+  // 转正管理
+  {
+    path: '/regularizations',
+    name: 'RegularizationCenter',
+    component: () => import('@/views/regularization/RegularizationCenter.vue'),
+  },
+  // 异动与离职
+  {
+    path: '/employee-movements',
+    name: 'MovementCenter',
+    component: () => import('@/views/movement/MovementCenter.vue'),
   },
   // 跟进节点
   {

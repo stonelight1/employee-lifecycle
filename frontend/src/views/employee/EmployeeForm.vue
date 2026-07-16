@@ -49,7 +49,7 @@ async function handleSubmit() {
       if (res.success) router.push(`/employees/${employeeId}`)
     } else {
       const res = await post('/employees', form.value)
-      if (res.success) router.push(`/employees/${res.data.id}`)
+      if (res.success) router.push(`/employees/${(res.data as any).id}`)
     }
   } catch (e: any) {
     error.value = e.message || '保存失败'

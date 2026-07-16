@@ -8,9 +8,11 @@ from datetime import date
 
 import pytest
 
+from app.models.employment import EmploymentRecord
 from app.services.employment_service import (
     create_employment,
     get_employment,
+    list_employee_employments,
     calculate_probation_end_date,
 )
 
@@ -83,3 +85,25 @@ class TestGetEmployment:
     def test_get_not_found(self, db_session, default_user):
         result = get_employment(db_session, 99999)
         assert result is None
+
+
+class TestListEmployeeEmployments:
+    """员工详情任职记录列表"""
+
+    def test_list_employments_excludes_deleted_records(self, db_session, default_user):
+        emp = _make_emp(db_session, default_user, "任职列表", "E020")
+        deleted = create_employment(
+            db_session, {"employee_id": emp["id"], "hire_date": date(2025, 1, 1)}, default_user
+        )
+        db_record = db_session.get(EmploymentRecord, deleted["id"])
+        db_record.is_deleted = True
+        db_session.flush()
+
+        active = create_employment(
+            db_session, {"employee_id": emp["id"], "hire_date": date(2026, 7, 1)}, default_user
+        )
+
+        items, total = list_employee_employments(db_session, emp["id"])
+
+        assert total == 1
+        assert [item["id"] for item in items] == [active["id"]]

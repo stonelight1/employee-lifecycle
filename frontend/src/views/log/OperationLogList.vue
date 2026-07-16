@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { get } from '@/api'
 import type { LogItem } from '@/types'
+import { formatDateTime } from '@/utils/date'
 
 const logs = ref<LogItem[]>([])
 const loading = ref(false)
@@ -25,11 +26,12 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div>
-    <div class="page-header">
-      <h2>操作日志</h2>
+  <div class="page">
+    <div class="page-intro">
+      <h1 class="page-title">操作日志</h1>
+      <p class="page-subtitle">系统操作审计记录</p>
     </div>
-    <div class="table-card">
+    <div class="card table-card">
       <table v-if="logs.length > 0">
         <thead>
           <tr>
@@ -43,23 +45,25 @@ onMounted(async () => {
         <tbody>
           <tr v-for="log in logs" :key="log.id">
             <td>{{ log.operator_id }}</td>
-            <td>{{ log.operated_at?.slice(0, 19) }}</td>
+            <td>{{ formatDateTime(log.operated_at) }}</td>
             <td>{{ log.object_type }}</td>
-            <td>{{ log.operation_type }}</td>
+            <td><code class="code-tag">{{ log.operation_type }}</code></td>
             <td>{{ log.operation_source || '-' }}</td>
           </tr>
         </tbody>
       </table>
-      <div v-else class="empty">{{ loading ? '加载中...' : '暂无操作日志' }}</div>
+      <div v-else-if="!loading" class="empty-state-inline">暂无操作日志</div>
+      <div v-else class="empty-state-inline">加载中...</div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.page-header { margin-bottom: 16px; }
-.table-card { background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06); overflow: hidden; }
+.page-intro { margin-bottom: 20px; }
+.table-card { overflow: hidden; }
 table { width: 100%; border-collapse: collapse; }
-th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid #ebeef5; font-size: 14px; }
-th { background: #fafafa; font-weight: 600; color: #606266; }
-.empty { text-align: center; padding: 48px; color: #909399; }
+th, td { padding: 10px 16px; text-align: left; border-bottom: 1px solid var(--color-border); font-size: var(--font-size-sm); }
+th { background: var(--color-bg); font-weight: 600; color: var(--color-text-secondary); }
+.code-tag { font-family: monospace; font-size: var(--font-size-xs); background: var(--color-bg); padding: 2px 6px; border-radius: 4px; }
+.empty-state-inline { text-align: center; padding: 48px; color: var(--color-text-tertiary); }
 </style>

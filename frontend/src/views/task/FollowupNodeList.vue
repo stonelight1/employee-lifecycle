@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { get } from '@/api'
+import { confirmationModeMap, getStatusLabel } from '@/constants/status'
 
 const router = useRouter()
 const nodes = ref<any[]>([])
@@ -21,11 +22,13 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div>
-    <div class="page-header">
-      <h2>跟进节点配置</h2>
+  <div class="page">
+    <div class="page-intro">
+      <h1 class="page-title">节点配置</h1>
+      <p class="page-subtitle">配置员工跟进节点和流程</p>
     </div>
-    <div class="table-card">
+
+    <div class="card table-card">
       <table v-if="nodes.length > 0">
         <thead>
           <tr>
@@ -39,28 +42,47 @@ onMounted(async () => {
         </thead>
         <tbody>
           <tr v-for="node in nodes" :key="node.id">
-            <td>{{ node.node_name }}</td>
-            <td>{{ node.node_code }}</td>
-            <td>{{ node.offset_days ?? '-' }}</td>
-            <td>{{ node.confirmation_mode }}</td>
-            <td>{{ node.enabled ? '✅' : '❌' }}</td>
+            <td><strong>{{ node.node_name }}</strong></td>
+            <td><code class="code">{{ node.node_code }}</code></td>
+            <td>{{ node.offset_days != null ? `${node.offset_days} 天` : '—' }}</td>
+            <td>{{ getStatusLabel(confirmationModeMap, node.confirmation_mode) }}</td>
             <td>
-              <button class="btn btn-sm">编辑</button>
+              <span v-if="node.enabled" class="toggle-dot active" />
+              <span v-else class="toggle-dot" />
+              <span class="text-xs text-tertiary" style="margin-left: 4px;">{{ node.enabled ? '启用' : '禁用' }}</span>
+            </td>
+            <td>
+              <button class="table-btn">编辑</button>
             </td>
           </tr>
         </tbody>
       </table>
-      <div v-else class="empty">{{ loading ? '加载中...' : '暂无节点配置' }}</div>
+      <div v-else-if="!loading" class="empty-state-inline">暂无节点配置</div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.page-header { display: flex; justify-content: space-between; margin-bottom: 16px; }
-.table-card { background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06); overflow: hidden; }
+.page-intro {
+  margin-bottom: 20px;
+}
+.table-card {
+  overflow: hidden;
+}
 table { width: 100%; border-collapse: collapse; }
-th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid #ebeef5; font-size: 14px; }
-th { background: #fafafa; font-weight: 600; color: #606266; }
-.btn-sm { padding: 4px 10px; border: 1px solid #dcdfe6; border-radius: 6px; background: #fff; cursor: pointer; font-size: 12px; }
-.empty { text-align: center; padding: 48px; color: #909399; }
+th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--color-border); font-size: var(--font-size-sm); }
+th { background: var(--color-bg); font-weight: 600; color: var(--color-text-secondary); }
+.code { font-family: monospace; font-size: var(--font-size-xs); background: var(--color-bg); padding: 2px 6px; border-radius: 4px; }
+.toggle-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-text-tertiary);
+}
+.toggle-dot.active {
+  background: var(--color-success);
+}
+.table-btn { padding: 3px 10px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); cursor: pointer; font-size: var(--font-size-xs); }
+.empty-state-inline { text-align: center; padding: 48px; color: var(--color-text-tertiary); font-size: var(--font-size-sm); }
 </style>

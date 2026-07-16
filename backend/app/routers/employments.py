@@ -14,6 +14,7 @@ from ..schemas.common import ApiResponse
 from ..schemas.employment import (
     DateChangePreviewResponse,
     EmploymentCreate,
+    EmploymentListResponse,
     EmploymentResponse,
     EmploymentUpdate,
 )
@@ -21,6 +22,7 @@ from ..services.employment_service import (
     confirm_date_change,
     create_employment,
     get_employment,
+    list_employee_employments,
     preview_date_change,
     update_employment,
 )
@@ -28,6 +30,27 @@ from ..services.followup_service import generate_auto_tasks
 from ..services.operation_log_service import create_log
 
 router = APIRouter(tags=["任职"])
+
+
+@router.get(
+    "/employees/{employee_id}/employments",
+    response_model=ApiResponse[EmploymentListResponse],
+)
+def list_employee_employments_route(
+    employee_id: int,
+    db: Session = Depends(get_db_session),
+    current_user: dict = Depends(get_current_user),
+):
+    """查询员工任职记录列表。"""
+    items, total = list_employee_employments(db, employee_id)
+    return {
+        "success": True,
+        "data": {
+            "items": items,
+            "total": total,
+        },
+        "request_id": str(uuid.uuid4()),
+    }
 
 
 @router.post(

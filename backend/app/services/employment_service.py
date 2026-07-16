@@ -165,6 +165,18 @@ def get_employment(db: Session, employment_id: int) -> Optional[dict]:
     return rec.dict()
 
 
+def list_employee_employments(db: Session, employee_id: int) -> tuple[list[dict], int]:
+    """查询员工的未删除任职记录，按任职序号倒序返回。"""
+    _get_active_employee(db, employee_id)
+    query = db.query(EmploymentRecord).filter(
+        EmploymentRecord.employee_id == employee_id,
+        EmploymentRecord.is_deleted == False,
+    )
+    total = query.count()
+    records = query.order_by(EmploymentRecord.employment_seq.desc()).all()
+    return [rec.dict() for rec in records], total
+
+
 def preview_date_change(
     db: Session, employment_id: int, new_hire_date: date
 ) -> dict:

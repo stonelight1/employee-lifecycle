@@ -1,0 +1,197 @@
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { get } from '@/api'
+import { formatDate } from '@/utils/date'
+import LifecycleBadge from '@/components/business/LifecycleBadge.vue'
+import BaseEmpty from '@/components/base/BaseEmpty.vue'
+
+const router = useRouter()
+const changes = ref<any[]>([])
+const separations = ref<any[]>([])
+const loading = ref(true)
+const activeTab = ref<'changes' | 'separation'>('changes')
+
+async function loadData() {
+  loading.value = true
+  try {
+    const empRes = await get<{ items: any[]; total: number }>('/employees', { page: 1, page_size: 100 })
+    const shifts: any[] = []
+    const seps: any[] = []
+
+    if (empRes.success && empRes.data) {
+      for (const emp of empRes.data.items) {
+        try {
+          const changesRes = await get<{ items: any[]; total: number }>(`/employees/${emp.id}/employments`)
+          const employments = changesRes.data?.items || []
+          for (const e of employments) {
+            // Load changes for this employment
+            try {
+              const chRes = await get<{ items: any[] }>(`/employments/${e.id}/changes`)
+              if (chRes.data?.items) {
+                for (const c of chRes.data.items) {
+                  shifts.push({
+                    ...c,
+                    employee_name: emp.name,
+                    department: e.department,
+                    position: e.position,
+                    employment_id: e.id,
+                    employee_id: emp.id,
+                  })
+                }
+              }
+            } catch {}
+            // Load separations
+            try {
+              const sepRes = await get<{ items: any[] }>(`/employments/${e.id}/separation-records`)
+              if (sepRes.data?.items) {
+                for (const s of sepRes.data.items) {
+                  seps.push({
+                    ...s,
+                    employee_name: emp.name,
+                    department: e.department,
+                    position: e.position,
+                    employment_id: e.id,
+                    employee_id: emp.id,
+                  })
+                }
+              }
+            } catch {}
+          }
+        } catch {}
+      }
+    }
+    changes.value = shifts
+    separations.value = seps
+  } catch (e: any) {
+    console.error('加载异动离职数据失败:', e)
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(loadData)
+</script>
+
+<template>
+  <div class="page">
+    <div class="page-intro">
+      <h1 class="page-title">异动与离职</h1>
+      <p class="page-subtitle">查看员工的异动记录和离职流程</p>
+    </div>
+
+    <div class="tabs-bar">
+      <button class="tab-btn" :class="{ active: activeTab === 'changes' }" @click="activeTab = 'changes'">
+        异动记录 ({{ changes.length }})
+      </button>
+      <button class="tab-btn" :class="{ active: activeTab === 'separation' }" @click="activeTab = 'separation'">
+        离职记录 ({{ separations.length }})
+      </button>
+    </div>
+
+    <div v-if="loading" class="loading-state text-tertiary">加载中...</div>
+
+    <!-- 异动记录 -->
+    <div v-else-if="activeTab === 'changes'">
+      <div v-if="changes.length === 0">
+        <BaseEmpty title="暂无异动记录" description="员工异动信息将显示在这里" />
+      </div>
+      <div v-else class="table-card card">
+        <table>
+          <thead>
+            <tr>
+              <th>员工</th>
+              <th>类型</th>
+              <th>变更前</th>
+              <th>变更后</th>
+              <th>生效日期</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="c in changes" :key="c.id">
+              <td>
+                <span class="link" @click="router.push(`/employees/${c.employee_id}`)">{{ c.employee_name }}</span>
+              </td>
+              <td>{{ c.change_type }}</td>
+              <td class="data-cell">{{ typeof c.before_data === 'object' ? JSON.stringify(c.before_data) : c.before_data || '-' }}</td>
+              <td class="data-cell">{{ typeof c.after_data === 'object' ? JSON.stringify(c.after_data) : c.after_data || '-' }}</td>
+              <td>{{ c.effective_date || '-' }}</td>
+              <td>
+                <button class="table-btn" @click="router.push(`/employments/${c.employment_id}/changes`)">查看</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 离职记录 -->
+    <div v-else>
+      <div v-if="separations.length === 0">
+        <BaseEmpty title="暂无离职记录" />
+      </div>
+      <div v-else class="table-card card">
+        <table>
+          <thead>
+            <tr>
+              <th>员工</th>
+              <th>类型</th>
+              <th>计划日期</th>
+              <th>实际日期</th>
+              <th>原因</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="s in separations" :key="s.id">
+              <td>
+                <span class="link" @click="router.push(`/employees/${s.employee_id}`)">{{ s.employee_name }}</span>
+              </td>
+              <td>{{ s.separation_type || '-' }}</td>
+              <td>{{ s.planned_separation_date || '-' }}</td>
+              <td>{{ s.actual_separation_date || '-' }}</td>
+              <td class="data-cell">{{ s.reason || '-' }}</td>
+              <td>
+                <button class="table-btn" @click="router.push(`/employments/${s.employment_id}/separation`)">查看</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.page-intro {
+  margin-bottom: 20px;
+}
+.tabs-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.tab-btn {
+  padding: 8px 18px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+.tab-btn.active {
+  background: var(--color-primary);
+  color: #fff;
+  border-color: var(--color-primary);
+}
+.table-card {
+  overflow: hidden;
+}
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 10px 16px; text-align: left; border-bottom: 1px solid var(--color-border); font-size: var(--font-size-sm); }
+th { background: var(--color-bg); font-weight: 600; color: var(--color-text-secondary); }
+.data-cell { max-width: 150px; white-space: pre-wrap; font-size: var(--font-size-xs); }
+.link { color: var(--color-primary); cursor: pointer; }
+.table-btn { padding: 3px 10px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); cursor: pointer; font-size: var(--font-size-xs); }
+</style>

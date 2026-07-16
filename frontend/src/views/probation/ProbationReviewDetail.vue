@@ -2,10 +2,12 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { get, post, patch } from '@/api'
+import { useToast } from '@/composables/useToast'
 import type { ProbationReviewItem, FollowupTaskItem, CommunicationItem } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
+const { showToast } = useToast()
 const reviewId = Number(route.params.id)
 const employmentId = Number(route.query.employment_id)
 
@@ -59,7 +61,7 @@ async function handleSave() {
         recommendation: review.value.recommendation || null,
       })
       if (res.success) {
-        alert('创建成功')
+        showToast({ type: 'success', message: '创建成功' })
         router.push(`/employments/${employmentId}/probation-reviews`)
       }
     } else {
@@ -69,12 +71,12 @@ async function handleSave() {
         recommendation: review.value.recommendation || null,
       })
       if (res.success && res.data) {
-        alert('保存成功')
+        showToast({ type: 'success', message: '保存成功' })
         Object.assign(review.value, res.data)
       }
     }
   } catch (e: any) {
-    alert(e.message || '保存失败')
+    showToast({ type: 'error', message: e.message || '保存失败' })
   } finally {
     saving.value = false
   }
@@ -90,11 +92,11 @@ async function handleComplete() {
       recommendation: review.value.recommendation || null,
     })
     if (res.success && res.data) {
-      alert('评估已完成')
+      showToast({ type: 'success', message: '评估已完成' })
       Object.assign(review.value, res.data)
     }
   } catch (e: any) {
-    alert(e.message || '完成失败')
+    showToast({ type: 'error', message: e.message || '完成失败' })
   } finally {
     isCompleting.value = false
   }

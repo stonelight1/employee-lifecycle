@@ -115,6 +115,7 @@ V1 不定义 ASR、录音或转写错误码。
 ## 6. 任职接口
 
 - `POST /api/employees/{employee_id}/employments`
+- `GET /api/employees/{employee_id}/employments`
 - `GET /api/employments/{employment_id}`
 - `PATCH /api/employments/{employment_id}`
 - `POST /api/employments/{employment_id}/date-change-preview`
