@@ -2,6 +2,8 @@ import api from '@/api'
 import type { ApiResponse, PageParams, PaginatedData } from '@/types/common'
 import type {
   BatchListItem,
+  BatchResolveRequest,
+  BatchResolveResponse,
   ColumnAliasItem,
   ColumnMapping,
   CommitResponse,
@@ -55,6 +57,22 @@ export async function getBatchDetail(batchId: number): Promise<Record<string, un
 }
 
 /**
+ * 重新校验导入批次
+ */
+export async function revalidateBatch(batchId: number): Promise<Record<string, unknown>> {
+  const res = await api.post(`${BASE}/${batchId}/revalidate`)
+  return res.data.data
+}
+
+/**
+ * 执行批次修复
+ */
+export async function repairBatch(batchId: number): Promise<Record<string, unknown>> {
+  const res = await api.post(`${BASE}/${batchId}/repair`)
+  return res.data.data
+}
+
+/**
  * 获取批次行
  */
 export async function getBatchRows(
@@ -71,8 +89,22 @@ export async function getBatchRows(
 export async function getBatchIssues(
   batchId: number,
   params?: { severity?: string; status?: string },
-): Promise<{ items: IssueItem[] }> {
+): Promise<{ items: IssueItem[]; total: number; pending_count: number; resolved_count: number; ignored_count: number }> {
   const res = await api.get(`${BASE}/${batchId}/issues`, { params })
+  return res.data.data
+}
+
+/**
+ * 同步待确认事项（将已导入批次的未处理问题转为 HR 确认事项）
+ */
+export async function syncConfirmations(batchId: number): Promise<{
+  scanned_issue_count: number
+  created_confirmation_count: number
+  existing_confirmation_count: number
+  unconvertible_count: number
+  unconvertible_items: Array<{ issue_id: number; row_no: number; reason: string }>
+}> {
+  const res = await api.post(`${BASE}/${batchId}/sync-confirmations`)
   return res.data.data
 }
 
@@ -182,5 +214,16 @@ export async function createValueAlias(data: {
   target_value: string
 }): Promise<ValueAliasItem> {
   const res = await api.post(`${BASE}/value-aliases`, data)
+  return res.data.data
+}
+
+/**
+ * 批量处理问题
+ */
+export async function batchResolveIssues(
+  batchId: number,
+  data: BatchResolveRequest,
+): Promise<BatchResolveResponse> {
+  const res = await api.post(`${BASE}/${batchId}/issues/batch-resolve`, data)
   return res.data.data
 }

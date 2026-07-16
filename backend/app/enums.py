@@ -215,6 +215,7 @@ class RosterBatchStatus(str, enum.Enum):
 
 
 class RosterRowStatus(str, enum.Enum):
+    """行状态（兼容旧数据，新逻辑使用三个独立字段）。"""
     NEW = "NEW"
     UPDATE = "UPDATE"
     UNCHANGED = "UNCHANGED"
@@ -224,9 +225,38 @@ class RosterRowStatus(str, enum.Enum):
     IMPORTED = "IMPORTED"
 
 
+class ImportAction(str, enum.Enum):
+    """导入动作：这名员工是新增还是更新。"""
+    NEW = "NEW"
+    UPDATE = "UPDATE"
+    UNCHANGED = "UNCHANGED"
+    SKIP = "SKIP"
+
+
+class ReviewStatus(str, enum.Enum):
+    """数据审核状态：是否存在待确认问题。"""
+    CLEAN = "CLEAN"
+    PENDING = "PENDING"
+    """有待处理确认事项。"""
+    NEEDS_CONFIRMATION = "NEEDS_CONFIRMATION"
+    """（旧值，兼容用）有待处理确认事项。"""
+    ERROR = "ERROR"
+    RESOLVED = "RESOLVED"
+    IGNORED = "IGNORED"
+
+
+class ExecutionStatus(str, enum.Enum):
+    """执行状态：是否已经成功导入。"""
+    PENDING = "PENDING"
+    IMPORTED = "IMPORTED"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
+
+
 class IssueSeverity(str, enum.Enum):
     BLOCKER = "BLOCKER"
     WARNING = "WARNING"
+    INFO = "INFO"
 
 
 class ResolutionStatus(str, enum.Enum):
@@ -316,6 +346,42 @@ class IssueAction(str, enum.Enum):
     """忽略（仅 WARNING 可用）"""
     SKIP_ROW = "SKIP_ROW"
     """跳过整行"""
+    APPLY_RECOMMENDATION = "APPLY_RECOMMENDATION"
+    """应用推荐处理方式（批量使用）"""
+    USE_SYSTEM_CALCULATION = "USE_SYSTEM_CALCULATION"
+    """使用系统计算结果，不保存Excel计算字段"""
+    USE_NORMALIZED_VALUE = "USE_NORMALIZED_VALUE"
+    """使用标准化后的值"""
+    USE_PARSED_VALUE = "USE_PARSED_VALUE"
+    """使用明确解析出的值"""
+    IGNORE_SOURCE_VALUE = "IGNORE_SOURCE_VALUE"
+    """忽略Excel当前字段"""
+
+
+class RecommendedAction(str, enum.Enum):
+    """系统推荐处理动作枚举。
+
+    所有问题在列出时附带推荐动作，供前端判断：
+    - 哪些可以批量自动处理（auto_fixable=True）
+    - 哪些需要人工判断
+    - 推荐的具体处理方式
+    """
+    USE_SYSTEM_CALCULATION = "USE_SYSTEM_CALCULATION"
+    """使用系统计算结果，不保存Excel计算字段"""
+    USE_NORMALIZED_VALUE = "USE_NORMALIZED_VALUE"
+    """使用标准化后的值"""
+    USE_PARSED_VALUE = "USE_PARSED_VALUE"
+    """使用明确解析出的值"""
+    IGNORE_SOURCE_VALUE = "IGNORE_SOURCE_VALUE"
+    """忽略Excel当前字段"""
+    UPDATE_NORMALIZED_DATA = "UPDATE_NORMALIZED_DATA"
+    """修改导入标准化数据"""
+    MANUAL_INPUT_REQUIRED = "MANUAL_INPUT_REQUIRED"
+    """必须人工输入"""
+    MANUAL_MAPPING_REQUIRED = "MANUAL_MAPPING_REQUIRED"
+    """必须人工映射"""
+    MANUAL_CONFIRMATION_REQUIRED = "MANUAL_CONFIRMATION_REQUIRED"
+    """必须人工判断（不能批量处理）"""
 
 
 # 未知动作集合（禁止用于 BLOCKER）
@@ -381,3 +447,9 @@ class ConfirmationIssueCode(str, enum.Enum):
     """户籍地址变更"""
     RESIDENCE_ADDRESS_CHANGE = "RESIDENCE_ADDRESS_CHANGE"
     """居住地址变更"""
+
+    # === 花名册生命周期问题 ===
+    MISSING_REGULARIZATION_DATE = "MISSING_REGULARIZATION_DATE"
+    """正式员工缺少转正日期"""
+    EMPLOYMENT_FORM_REGULARIZATION_CONFLICT = "EMPLOYMENT_FORM_REGULARIZATION_CONFLICT"
+    """花名册写"试用"但转正日期已到达"""

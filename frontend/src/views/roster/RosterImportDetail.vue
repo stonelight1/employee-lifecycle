@@ -31,6 +31,9 @@ import {
   getRollbackPreview,
   executeRollback,
   getFileDownloadUrl,
+  revalidateBatch,
+  repairBatch,
+  syncConfirmations,
 } from '@/services/rosterImportService'
 import type { IssueItem, RollbackPreviewResponse, RollbackItem } from '@/types/roster-import'
 
@@ -57,6 +60,22 @@ const rowFilterStatus = ref('')
 // Rollback preview
 const rollbackPreview = ref<RollbackPreviewResponse | null>(null)
 const showRollbackPreview = ref(false)
+
+// Revalidation
+const revalidating = ref(false)
+const revalidationResult = ref<Record<string, any> | null>(null)
+const showRevalidation = ref(false)
+const repairing = ref(false)
+const repairResult = ref<Record<string, any> | null>(null)
+
+// Sync confirmations
+const syncing = ref(false)
+const syncResult = ref<Record<string, any> | null>(null)
+const showSyncResult = ref(false)
+const issueTotal = ref(0)
+const issuePendingCount = ref(0)
+const issueResolvedCount = ref(0)
+const issueIgnoredCount = ref(0)
 
 // Batch status map
 const batchStatusMap: Record<string, { label: string; color: string; background: string }> = {
@@ -158,6 +177,10 @@ async function loadIssues() {
   try {
     const result = await getBatchIssues(batchId.value)
     issues.value = result.items || []
+    issueTotal.value = result.total || 0
+    issuePendingCount.value = result.pending_count || 0
+    issueResolvedCount.value = result.resolved_count || 0
+    issueIgnoredCount.value = result.ignored_count || 0
   } catch (e: any) {
     showToast({ message: e.message || '加载问题失败', type: 'error' })
   } finally {
@@ -236,6 +259,137 @@ function handleRollback() {
   })
 }
 
+async function handleSyncConfirmations() {
+  try {
+    const result = await syncConfirmations(batchId.value)
+    syncResult.value = result
+    showSyncResult.value = true
+
+    if (result.created_confirmation_count > 0) {
+      showToast({
+        message: `已创建 ${result.created_confirmation_count} 条待确认事项`,
+        type: 'success',
+      })
+    } else if (result.existing_confirmation_count > 0) {
+      showToast({ message: `已有 ${result.existing_confirmation_count} 条待确认事项`, type: 'info' })
+    } else {
+      showToast({ message: '无需同步', type: 'info' })
+    }
+
+    await loadIssues()
+    await loadBatchDetail()
+  } catch (e: any) {
+    showToast({ message: e.message || '同步失败', type: 'error' })
+  } finally {
+    syncing.value = false
+  }
+}
+
+function canSyncConfirmations(): boolean {
+  const status = batchDetail.value?.batch_status
+  if (status !== 'SUCCEEDED') return false
+  if (issuePendingCount.value <= 0) return false
+  if (syncResult.value && syncResult.value.created_confirmation_count > 0) return false
+  return true
+}
+
+function goToWizard() {
+  router.push(`/roster-imports/new?batch_id=${batchId.value}`)
+}
+
+// 多状态标签映射
+const multiStatusMap: Record<string, { label: string; color: string; background: string }> = {
+  NEW: { label: '新增', color: '#16825D', background: '#EAF8F1' },
+  UPDATE: { label: '更新', color: '#2563EB', background: '#EFF6FF' },
+  SKIP: { label: '跳过', color: '#98A2B3', background: '#F2F4F7' },
+  IMPORTED: { label: '已导入', color: '#16825D', background: '#EAF8F1' },
+  CLEAN: { label: '无问题', color: '#16825D', background: '#EAF8F1' },
+  NEEDS_CONFIRMATION: { label: '待确认', color: '#D97706', background: '#FFF7E8' },
+  ERROR: { label: '错误', color: '#E11D48', background: '#FFF1F2' },
+  RESOLVED: { label: '已解决', color: '#16825D', background: '#EAF8F1' },
+  IGNORED: { label: '已忽略', color: '#98A2B3', background: '#F2F4F7' },
+  PENDING: { label: '待处理', color: '#D97706', background: '#FFF7E8' },
+  FAILED: { label: '失败', color: '#E11D48', background: '#FFF1F2' },
+  UNCHANGED: { label: '无变化', color: '#667085', background: '#F2F4F7' },
+}
+
+function getStatusTags(row: Record<string, any>): Array<{ label: string; color: string; background: string }> {
+  const tags: Array<{ label: string; color: string; background: string }> = []
+
+  // import_action tag
+  if (row.import_action && multiStatusMap[row.import_action]) {
+    tags.push(multiStatusMap[row.import_action])
+  }
+
+  // execution_status tag
+  if (row.execution_status === 'IMPORTED') {
+    tags.push({ label: '已导入', color: '#16825D', background: '#EAF8F1' })
+  } else if (row.execution_status === 'PENDING') {
+    tags.push({ label: '待处理', color: '#D97706', background: '#FFF7E8' })
+  } else if (row.execution_status === 'SKIPPED') {
+    tags.push({ label: '跳过', color: '#98A2B3', background: '#F2F4F7' })
+  }
+
+  // review_status tag
+  if (row.review_status === 'NEEDS_CONFIRMATION' || row.review_status === 'PENDING') {
+    tags.push({ label: '待确认', color: '#D97706', background: '#FFF7E8' })
+  } else if (row.review_status === 'ERROR') {
+    tags.push({ label: '错误', color: '#E11D48', background: '#FFF1F2' })
+  } else if (row.review_status === 'IGNORED') {
+    tags.push({ label: '已忽略', color: '#98A2B3', background: '#F2F4F7' })
+  }
+
+  // fall back to old row_status if no new status tags
+  if (tags.length === 0 && row.row_status === 'NEEDS_CONFIRMATION') {
+    tags.push({ label: '待确认', color: '#D97706', background: '#FFF7E8' })
+  } else if (tags.length === 0 && row.row_status === 'ERROR') {
+    tags.push({ label: '错误', color: '#E11D48', background: '#FFF1F2' })
+  }
+
+  return tags
+}
+
+// Revalidation
+async function handleRevalidate() {
+  revalidating.value = true
+  try {
+    const result = await revalidateBatch(batchId.value)
+    revalidationResult.value = result
+    showRevalidation.value = true
+  } catch (e: any) {
+    showToast({ message: e.message || '重新校验失败', type: 'error' })
+  } finally {
+    revalidating.value = false
+  }
+}
+
+async function handleRepair() {
+  if (!revalidationResult.value?.stats?.auto_repairable) {
+    showToast({ message: '没有可以自动修复的员工', type: 'info' })
+    return
+  }
+  confirm({
+    title: '确认执行修复',
+    message: `将自动修复 ${revalidationResult.value.stats.auto_repairable} 名员工的${revalidationResult.value.stats.wrong_probation_count ? `（${revalidationResult.value.stats.wrong_probation_count} 名试用期状态、${revalidationResult.value.stats.missing_regularization_date_count} 名缺少转正日期）` : ''}数据。此操作不可逆，是否继续？`,
+    confirmText: '执行修复',
+    danger: true,
+    onConfirm: async () => {
+      repairing.value = true
+      try {
+        const result = await repairBatch(batchId.value)
+        repairResult.value = result
+        showToast({ message: `修复完成：修复 ${result.repaired_count} 人，取消 ${result.cancelled_tasks_count || 0} 个任务，创建 ${result.confirmations_created || 0} 个确认事项`, type: 'success' })
+        showRevalidation.value = false
+        await loadBatchDetail()
+      } catch (e: any) {
+        showToast({ message: e.message || '修复失败', type: 'error' })
+      } finally {
+        repairing.value = false
+      }
+    },
+  })
+}
+
 function goBack() {
   router.push('/roster-imports')
 }
@@ -268,6 +422,16 @@ const rowFilterOptions = [
         <BaseButton variant="ghost" size="sm" @click="downloadFile">
           <Download :size="16" />
           下载原文件
+        </BaseButton>
+        <BaseButton
+          v-if="batchDetail?.batch_status === 'SUCCEEDED'"
+          variant="warning"
+          size="sm"
+          :loading="revalidating"
+          @click="handleRevalidate"
+        >
+          <AlertTriangle :size="16" />
+          重新校验
         </BaseButton>
         <BaseButton
           v-if="batchDetail?.batch_status === 'SUCCEEDED'"
@@ -376,7 +540,8 @@ const rowFilterOptions = [
         @click="onTabChange('issues')"
       >
         <AlertTriangle :size="14" />
-        问题（{{ issues.length }}）
+        问题（{{ issueTotal }}）
+        <span v-if="issuePendingCount > 0" class="tab-badge">{{ issuePendingCount }} 待处理</span>
       </button>
     </div>
 
@@ -416,13 +581,17 @@ const rowFilterOptions = [
             </td>
             <td>{{ row.match_type || '—' }}</td>
             <td>
-              <BaseBadge
-                type="custom"
-                :label="rowStatusInfo[row.row_status]?.label || row.row_status"
-                :color="rowStatusInfo[row.row_status]?.color || '#98A2B3'"
-                :background="rowStatusInfo[row.row_status]?.background || '#F2F4F7'"
-                size="sm"
-              />
+              <div class="multi-status-tags">
+                <BaseBadge
+                  v-for="(tag, idx) in getStatusTags(row)"
+                  :key="idx"
+                  type="custom"
+                  :label="tag.label"
+                  :color="tag.color"
+                  :background="tag.background"
+                  size="sm"
+                />
+              </div>
             </td>
             <td class="td-raw">
               <span v-if="row.raw_data" class="raw-preview">{{ JSON.stringify(row.raw_data).substring(0, 60) }}{{ JSON.stringify(row.raw_data).length > 60 ? '...' : '' }}</span>
@@ -449,6 +618,38 @@ const rowFilterOptions = [
 
     <!-- Issues tab -->
     <div v-if="activeTab === 'issues'" class="card issues-card">
+      <!-- Toolbar -->
+      <div class="issues-toolbar">
+        <div class="issues-stats">
+          <span class="stat-item">总计 {{ issueTotal }} 条</span>
+          <span v-if="issuePendingCount > 0" class="stat-item stat-pending">待处理 {{ issuePendingCount }}</span>
+          <span v-if="issueResolvedCount > 0" class="stat-item stat-resolved">已处理 {{ issueResolvedCount }}</span>
+          <span v-if="issueIgnoredCount > 0" class="stat-item stat-ignored">已忽略 {{ issueIgnoredCount }}</span>
+        </div>
+        <div class="issues-toolbar-actions">
+          <!-- 未提交批次 → 去导入向导 -->
+          <BaseButton
+            v-if="batchDetail && !['SUCCEEDED', 'FAILED', 'ROLLED_BACK'].includes(batchDetail.batch_status) && issuePendingCount > 0"
+            variant="primary"
+            size="sm"
+            @click="goToWizard"
+          >
+            去导入向导处理
+          </BaseButton>
+          <!-- 已成功批次 → 同步待确认事项 -->
+          <BaseButton
+            v-if="canSyncConfirmations()"
+            variant="primary"
+            size="sm"
+            :loading="syncing"
+            @click="handleSyncConfirmations"
+          >
+            <Check :size="14" />
+            同步待确认事项
+          </BaseButton>
+        </div>
+      </div>
+
       <div v-if="issues.length > 0">
         <!-- BLOCKER issues -->
         <div v-if="issues.filter(i => i.severity === 'BLOCKER').length > 0" class="issue-group">
@@ -553,6 +754,48 @@ const rowFilterOptions = [
             </div>
           </div>
         </div>
+
+        <!-- INFO issues -->
+        <div v-if="issues.filter(i => i.severity === 'INFO').length > 0" class="issue-group">
+          <h3 class="issue-group-title">
+            <AlertCircle :size="16" class="issue-info-icon" />
+            提示信息
+          </h3>
+          <div
+            v-for="issue in issues.filter(i => i.severity === 'INFO')"
+            :key="issue.id"
+            class="issue-item issue-info"
+          >
+            <div class="issue-header">
+              <span class="issue-title">{{ issue.title }}</span>
+              <div class="issue-meta">
+                <BaseBadge
+                  type="custom"
+                  label="INFO"
+                  color="#2563EB"
+                  background="#EFF6FF"
+                  size="sm"
+                />
+                <BaseBadge
+                  type="custom"
+                  :label="getStatusLabel(resolutionStatusMap, issue.resolution_status) || issue.resolution_status"
+                  :color="issue.resolution_status === 'PENDING' ? '#D97706' : '#16825D'"
+                  :background="issue.resolution_status === 'PENDING' ? '#FFF7E8' : '#EAF8F1'"
+                  size="sm"
+                />
+              </div>
+            </div>
+            <p v-if="issue.message" class="issue-message">{{ issue.message }}</p>
+            <div class="issue-footer">
+              <span v-if="issue.resolution_action" class="resolution-info">
+                处理方式：{{ issue.resolution_action }}
+              </span>
+              <span v-if="issue.resolved_at" class="resolution-time">
+                处理时间：{{ formatDateTime(issue.resolved_at) }}
+              </span>
+            </div>
+          </div>
+        </div>
       </div>
       <div v-else-if="!loadingIssues">
         <BaseEmpty title="暂无问题" />
@@ -623,6 +866,83 @@ const rowFilterOptions = [
                 {{ conflict }}
               </li>
             </ul>
+          </div>
+        </div>
+      </template>
+    </BaseModal>
+
+    <!-- Revalidation Modal -->
+    <BaseModal
+      v-if="showRevalidation && revalidationResult"
+      :show="showRevalidation"
+      title="重新校验结果"
+      :confirm-text="revalidationResult.stats?.auto_repairable > 0 ? '执行自动修复' : '关闭'"
+      :danger="revalidationResult.stats?.auto_repairable > 0"
+      :loading="repairing"
+      @confirm="revalidationResult.stats?.auto_repairable > 0 ? handleRepair() : (showRevalidation = false)"
+      @cancel="showRevalidation = false"
+    >
+      <template #message>
+        <div class="revalidation-body">
+          <div class="revalidation-summary">
+            <div class="rev-stat">
+              <span class="rev-stat-count">{{ revalidationResult.stats?.total_rows || 0 }}</span>
+              <span class="rev-stat-label">总行数</span>
+            </div>
+            <div class="rev-stat">
+              <span class="rev-stat-count" style="color: #D97706">{{ revalidationResult.stats?.issues_found || 0 }}</span>
+              <span class="rev-stat-label">发现问题</span>
+            </div>
+            <div class="rev-stat">
+              <span class="rev-stat-count" style="color: #16825D">{{ revalidationResult.stats?.auto_repairable || 0 }}</span>
+              <span class="rev-stat-label">可自动修复</span>
+            </div>
+            <div class="rev-stat">
+              <span class="rev-stat-count" style="color: #E11D48">{{ revalidationResult.stats?.needs_manual_review || 0 }}</span>
+              <span class="rev-stat-label">需人工处理</span>
+            </div>
+          </div>
+
+          <div v-if="revalidationResult.stats?.wrong_probation_count" class="rev-detail">
+            <p><strong>错误的试用期状态：</strong>{{ revalidationResult.stats.wrong_probation_count }} 人</p>
+          </div>
+          <div v-if="revalidationResult.stats?.missing_regularization_date_count" class="rev-detail">
+            <p><strong>缺少转正日期：</strong>{{ revalidationResult.stats.missing_regularization_date_count }} 人</p>
+          </div>
+
+          <div v-if="revalidationResult.employee_findings?.length > 0" class="rev-findings">
+            <h4 class="rev-findings-title">员工详情</h4>
+            <div
+              v-for="f in revalidationResult.employee_findings.filter((f: Record<string, any>) => f.differences?.length > 0)"
+              :key="f.employee_id || f.row_no"
+              class="rev-finding"
+            >
+              <div class="rev-finding-header">
+                <span class="rev-finding-name">{{ f.employee_name || '未知' }}</span>
+                <BaseBadge
+                  v-if="f.can_auto_repair"
+                  type="custom"
+                  label="可自动修复"
+                  color="#16825D"
+                  background="#EAF8F1"
+                  size="sm"
+                />
+                <BaseBadge
+                  v-else
+                  type="custom"
+                  :label="f.cannot_repair_reason || '需人工'"
+                  color="#E11D48"
+                  background="#FFF1F2"
+                  size="sm"
+                />
+              </div>
+              <div v-for="diff in f.differences" :key="diff.field" class="rev-diff">
+                <span class="rev-diff-field">{{ diff.field }}：</span>
+                <span class="rev-diff-from">{{ diff.current }}</span>
+                <span class="rev-diff-arrow">→</span>
+                <span class="rev-diff-to">{{ diff.expected }}</span>
+              </div>
+            </div>
           </div>
         </div>
       </template>
@@ -870,6 +1190,41 @@ tr:hover td {
 .issues-card {
   padding: 0;
 }
+.issues-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg);
+}
+.issues-stats {
+  display: flex;
+  gap: 16px;
+  font-size: 13px;
+}
+.stat-item { color: var(--color-text-secondary); }
+.stat-pending { color: var(--color-warning, #d97706); font-weight: 500; }
+.stat-resolved { color: var(--color-success, #16825D); font-weight: 500; }
+.stat-ignored { color: var(--color-text-tertiary); }
+
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #fff;
+  background: var(--color-warning, #d97706);
+  border-radius: 10px;
+  margin-left: 4px;
+}
+
+.issue-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
 .issue-group {
   padding: 16px 20px;
 }
@@ -890,6 +1245,9 @@ tr:hover td {
 .issue-warn-icon {
   color: var(--color-warning);
 }
+.issue-info-icon {
+  color: var(--color-primary);
+}
 .issue-item {
   padding: 12px 14px;
   border: 1px solid var(--color-border);
@@ -901,6 +1259,9 @@ tr:hover td {
 }
 .issue-warning {
   border-left: 3px solid var(--color-warning);
+}
+.issue-info {
+  border-left: 3px solid var(--color-primary);
 }
 .issue-header {
   display: flex;
@@ -1020,6 +1381,91 @@ tr:hover td {
   font-size: var(--font-size-xs);
   color: var(--color-text-secondary);
   padding: 4px 0;
+}
+
+/* Multi-status tags */
+.multi-status-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+/* Revalidation */
+.revalidation-body {
+  max-height: 500px;
+  overflow-y: auto;
+}
+.revalidation-summary {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.rev-stat {
+  flex: 1;
+  min-width: 80px;
+  text-align: center;
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+.rev-stat-count {
+  display: block;
+  font-size: 20px;
+  font-weight: 700;
+}
+.rev-stat-label {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+}
+.rev-detail {
+  font-size: var(--font-size-sm);
+  margin-bottom: 8px;
+}
+.rev-findings {
+  margin-top: 12px;
+}
+.rev-findings-title {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.rev-finding {
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 6px;
+}
+.rev-finding-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.rev-finding-name {
+  font-weight: 500;
+  font-size: var(--font-size-sm);
+}
+.rev-diff {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.rev-diff-field {
+  font-weight: 500;
+}
+.rev-diff-from {
+  color: var(--color-danger);
+  text-decoration: line-through;
+}
+.rev-diff-arrow {
+  color: var(--color-text-tertiary);
+}
+.rev-diff-to {
+  color: var(--color-primary);
+  font-weight: 500;
 }
 
 /* Utility */

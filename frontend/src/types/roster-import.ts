@@ -91,6 +91,14 @@ export interface IssueItem {
   employee_name: string | null
   created_at?: string | null
   updated_at?: string | null
+  // 推荐处理字段
+  source_value?: string | null
+  system_value?: string | null
+  recommended_action?: string | null
+  recommended_value?: unknown
+  recommendation_text?: string | null
+  auto_fixable?: boolean
+  requires_business_update?: boolean
 }
 
 export interface PreviewResponse {
@@ -163,6 +171,24 @@ export interface RollbackPreviewResponse {
   items: RollbackItem[]
   irreversible_operations: string[]
   conflicts: string[]
+}
+
+export interface BatchResolveRequest {
+  issue_ids: number[]
+  action: 'APPLY_RECOMMENDATION' | 'IGNORE'
+  note?: string
+}
+
+export interface BatchResolveResponse {
+  total: number
+  resolved: number
+  skipped: number
+  conflicts: Array<{
+    issue_id: number
+    issue_code: string
+    reason: string
+  }>
+  failed_ids: number[]
 }
 
 export interface ColumnAliasItem {

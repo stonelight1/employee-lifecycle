@@ -21,6 +21,7 @@ import {
   generatePreview,
   getBatchIssues,
   resolveIssue,
+  batchResolveIssues,
   commitImport,
   getFileDownloadUrl,
   getFieldDefinitions,
@@ -57,7 +58,14 @@ const steps = [
 
 // ===================== Shared State =====================
 const uploadResult = ref<RosterUploadResponse | null>(null)
-const batchId = computed(() => uploadResult.value?.batch_id ?? null)
+const batchId = computed(() => {
+  // 优先使用上传结果中的 batch_id
+  if (uploadResult.value?.batch_id) return uploadResult.value.batch_id
+  // 支持从 query params 传入已有批次 ID
+  const qid = route.query.batch_id
+  if (qid) return Number(qid)
+  return null
+})
 const hasExistingInitBatch = ref(false)
 
 // Upload step state
@@ -256,7 +264,7 @@ async function handleIssueAction(issue: IssueItem, action: string) {
   wizardLoading.value = true
   try {
     const payload: any = { action }
-    if ((action === 'accept' || action === 'modify') && issue.new_value !== undefined) {
+    if ((action === 'ACCEPT' || action === 'MODIFY_VALUE') && issue.new_value !== undefined) {
       payload.value = issue.new_value
     }
     await resolveIssue(batchId.value, issue.id, payload)
@@ -273,11 +281,31 @@ async function handleIssueModifySubmit(issue: IssueItem, value: string, note: st
   if (!batchId.value) return
   wizardLoading.value = true
   try {
-    await resolveIssue(batchId.value, issue.id, { action: 'modify', value, note: note || undefined })
+    // MODIFY_VALUE 需要 {field_key, new_value} 格式的 value
+    const modifyValue = { field_key: issue.field_key || '', new_value: value }
+    await resolveIssue(batchId.value, issue.id, { action: 'MODIFY_VALUE', value: modifyValue, note: note || undefined })
     showToast({ message: '修改已保存', type: 'success' })
     await loadIssues()
   } catch (e: any) {
     showToast({ message: e.message || '修改失败', type: 'error' })
+  } finally {
+    wizardLoading.value = false
+  }
+}
+
+async function handleBatchResolve(issueIds: number[], resolveAction: string) {
+  if (!batchId.value || issueIds.length === 0) return
+  wizardLoading.value = true
+  try {
+    const result = await batchResolveIssues(batchId.value, { issue_ids: issueIds, action: resolveAction as 'APPLY_RECOMMENDATION' | 'IGNORE' })
+    if (result.conflicts && result.conflicts.length > 0) {
+      showToast({ message: `${result.resolved}条处理成功，${result.conflicts.length}条因冲突跳过`, type: 'warning' })
+    } else {
+      showToast({ message: `${result.resolved}条问题已处理`, type: 'success' })
+    }
+    await loadIssues()
+  } catch (e: any) {
+    showToast({ message: e.message || '批量处理失败', type: 'error' })
   } finally {
     wizardLoading.value = false
   }
@@ -357,7 +385,17 @@ function resetBatchState() {
 }
 
 // ===================== Init =====================
-onMounted(() => { pageLoading.value = false })
+onMounted(async () => {
+  // 如果从 query params 传入已有批次 ID，直接跳到问题处理步骤
+  const qid = route.query.batch_id
+  if (qid && !isNaN(Number(qid))) {
+    // 模拟 uploadResult 让 batchId 计算属性生效
+    uploadResult.value = { batch_id: Number(qid) } as any
+    // 直接跳到步骤 4（问题处理），watch 会自动加载映射、预览和问题
+    currentStep.value = 4
+  }
+  pageLoading.value = false
+})
 
 // Watchers
 watch(currentStep, async (step) => {
@@ -438,6 +476,7 @@ watch(currentStep, async (step) => {
       :loading="wizardLoading"
       @resolve="handleIssueAction"
       @modify-submit="handleIssueModifySubmit"
+      @batch-resolve="handleBatchResolve"
       @continue="() => currentStep = 5"
       @prev="goPrev"
     />

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import FileResponse
+from sqlalchemy import or_
 from sqlalchemy.orm import Session as DBSession
 
 from ..config import settings
@@ -30,6 +31,8 @@ from ..models.roster_row import RosterImportRow
 from ..schemas.common import ApiResponse, PageParams
 from ..schemas.roster_import import (
     BatchListResponse,
+    BatchResolveRequest,
+    BatchResolveResponse,
     ColumnAliasItem,
     CommitConfirmation,
     CommitResponse,
@@ -46,14 +49,25 @@ from ..schemas.roster_import import (
     SaveMappingResponse,
     ValueAliasItem,
 )
+from ..services.hr_confirmation_service import (
+    confirm_item as hr_confirm_item,
+    sync_roster_issues_to_confirmations,
+)
 from ..services.operation_log_service import create_log
 from ..services.roster_commit_service import commit_import
 from ..services.roster_import_service import list_batches
 from ..services.roster_issue_resolution import (
+    batch_resolve_issues,
     get_handler,
     needs_recalc,
     resolve_issue,
 )
+from ..services.roster_issue_recommendation import (
+    AUTO_FIXABLE_ISSUE_CODES,
+    enrich_issue_list,
+    enrich_issue_with_recommendation,
+)
+from ..services.roster_repair_service import revalidate_batch, execute_repair
 from ..services.roster_mapping_service import (
     auto_detect_mappings,
     create_column_alias,
@@ -330,15 +344,35 @@ def get_batch_route(
 )
 def list_rows_route(
     batch_id: int,
-    status: str | None = Query(default=None, description="行状态筛选"),
+    status: str | None = Query(default=None, description="行状态筛选（兼容旧参数）"),
+    import_action: str | None = Query(default=None, description="导入动作: NEW/UPDATE/UNCHANGED/SKIP"),
+    review_status: str | None = Query(default=None, description="审核状态: CLEAN/NEEDS_CONFIRMATION/ERROR/RESOLVED/IGNORED"),
+    execution_status: str | None = Query(default=None, description="执行状态: PENDING/IMPORTED/FAILED/SKIPPED"),
     page: int = Query(default=1, ge=1, description="页码"),
     page_size: int = Query(default=50, ge=1, le=200, description="每页条数"),
     db: DBSession = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
     query = db.query(RosterImportRow).filter(RosterImportRow.batch_id == batch_id)
+
+    # 兼容旧参数
     if status:
         query = query.filter(RosterImportRow.row_status == status)
+    if import_action:
+        query = query.filter(RosterImportRow.import_action == import_action)
+    if review_status:
+        query = query.filter(RosterImportRow.review_status == review_status)
+    if execution_status:
+        query = query.filter(RosterImportRow.execution_status == execution_status)
+
+    # 待确认筛选：只要任一新状态或旧状态为 NEEDS_CONFIRMATION
+    if status == "NEEDS_CONFIRMATION":
+        query = query.filter(
+            or_(
+                RosterImportRow.review_status == "NEEDS_CONFIRMATION",
+                RosterImportRow.row_status == "NEEDS_CONFIRMATION",
+            )
+        )
 
     total = query.count()
     rows = (
@@ -386,11 +420,23 @@ def list_issues_route(
 
     issues = query.order_by(RosterImportIssue.severity.asc(), RosterImportIssue.id.asc()).all()
 
+    # 统计各状态数量
+    pending_count = sum(1 for i in issues if i.resolution_status == "PENDING")
+    resolved_count = sum(1 for i in issues if i.resolution_status == "RESOLVED")
+    ignored_count = sum(1 for i in issues if i.resolution_status == "IGNORED")
+
+    # 转换为字典并添加推荐信息
+    issue_dicts = [_issue_to_dict(i) for i in issues]
+    enriched = enrich_issue_list(issue_dicts)
+
     return {
         "success": True,
         "data": {
-            "items": [_issue_to_dict(i) for i in issues],
+            "items": enriched,
             "total": len(issues),
+            "pending_count": pending_count,
+            "resolved_count": resolved_count,
+            "ignored_count": ignored_count,
         },
         "request_id": str(uuid.uuid4()),
     }
@@ -564,6 +610,72 @@ def resolve_issue_route(
     }
 
 
+@router.post(
+    "/roster-imports/{batch_id}/issues/batch-resolve",
+    response_model=ApiResponse[BatchResolveResponse],
+    summary="批量处理问题",
+)
+def batch_resolve_route(
+    batch_id: int,
+    body: BatchResolveRequest,
+    db: DBSession = Depends(get_db_session),
+    current_user: dict = Depends(get_current_user),
+):
+    """批量处理问题（单一事务）。
+
+    支持的操作：
+    - APPLY_RECOMMENDATION: 批量应用推荐处理（仅 auto_fixable=True 的问题）
+    - IGNORE: 批量忽略（仅 WARNING 级别）
+
+    事务规则：
+    - 所有操作在单一事务中执行
+    - 任何异常导致整批回滚
+    - 数据变化导致冲突时返回冲突列表，不启动事务
+    """
+    if body.action not in ("APPLY_RECOMMENDATION", "IGNORE"):
+        raise ValidationError(
+            f"不支持的批量操作: {body.action}。支持: APPLY_RECOMMENDATION, IGNORE"
+        )
+
+    result = batch_resolve_issues(
+        db=db,
+        batch_id=batch_id,
+        issue_ids=body.issue_ids,
+        action=body.action,
+        note=body.note,
+        operator=current_user,
+        auto_fixable_check=AUTO_FIXABLE_ISSUE_CODES,
+    )
+
+    if result.get("conflicts"):
+        # 有冲突时返回冲突信息，不提交
+        db.rollback()
+        return {
+            "success": True,
+            "data": result,
+            "request_id": str(uuid.uuid4()),
+        }
+
+    create_log(
+        db,
+        operator_id=current_user.get("user_id", "system"),
+        object_type="ROSTER_IMPORT",
+        object_id=batch_id,
+        operation_type="BATCH_RESOLVE_ISSUES",
+        after_data={
+            "action": body.action,
+            "total": result.get("total"),
+            "resolved": result.get("resolved"),
+        },
+    )
+
+    return {
+        "success": True,
+        "data": result,
+        "request_id": str(uuid.uuid4()),
+    }
+
+
 # ============================================================
 # 提交导入
 # ============================================================
@@ -673,6 +785,125 @@ def rollback_route(
         object_type="ROSTER_IMPORT",
         object_id=batch_id,
         operation_type="ROLLBACK",
+        after_data=result,
+    )
+
+    db.commit()
+
+    return {
+        "success": True,
+        "data": result,
+        "request_id": str(uuid.uuid4()),
+    }
+
+
+# ============================================================
+# 重新校验与修复
+# ============================================================
+
+
+@router.post(
+    "/roster-imports/{batch_id}/revalidate",
+    response_model=ApiResponse[dict],
+    summary="重新校验导入批次",
+)
+def revalidate_route(
+    batch_id: int,
+    db: DBSession = Depends(get_db_session),
+    current_user: dict = Depends(get_current_user),
+):
+    """重新校验已成功导入的批次。
+
+    读取原始花名册数据，比对系统当前状态，生成差异报告。
+    默认只检查不修改数据。
+    """
+    result = revalidate_batch(db, batch_id)
+
+    create_log(
+        db,
+        operator_id=current_user.get("user_id", "system"),
+        object_type="ROSTER_IMPORT",
+        object_id=batch_id,
+        operation_type="REVALIDATE",
+        after_data={"stats": result.get("stats")},
+    )
+
+    db.commit()
+
+    return {
+        "success": True,
+        "data": result,
+        "request_id": str(uuid.uuid4()),
+    }
+
+
+@router.post(
+    "/roster-imports/{batch_id}/repair",
+    response_model=ApiResponse[dict],
+    summary="执行批次修复",
+)
+def repair_route(
+    batch_id: int,
+    db: DBSession = Depends(get_db_session),
+    current_user: dict = Depends(get_current_user),
+):
+    """执行批次自动修复。
+
+    修复失败时整批回滚。
+    """
+    result = execute_repair(db, batch_id, current_user)
+
+    create_log(
+        db,
+        operator_id=current_user.get("user_id", "system"),
+        object_type="ROSTER_IMPORT",
+        object_id=batch_id,
+        operation_type="REPAIR",
+        after_data=result,
+    )
+
+    db.commit()
+
+    return {
+        "success": True,
+        "data": result,
+        "request_id": str(uuid.uuid4()),
+    }
+
+
+# ============================================================
+# 同步待确认事项
+# ============================================================
+
+
+@router.post(
+    "/roster-imports/{batch_id}/sync-confirmations",
+    response_model=ApiResponse[dict],
+    summary="同步待确认事项（将已有导入问题转为 HR 确认事项）",
+)
+def sync_confirmations_route(
+    batch_id: int,
+    db: DBSession = Depends(get_db_session),
+    current_user: dict = Depends(get_current_user),
+):
+    """将已成功导入批次中未处理的导入问题同步为 HR 确认事项。
+
+    功能：
+    - 只处理状态为 SUCCEEDED 的批次
+    - 使用稳定幂等键防止重复创建
+    - 无法转换的问题（无员工、无映射）返回原因
+    - 不修改已经正确的业务数据
+
+    重复调用保持幂等。
+    """
+    result = sync_roster_issues_to_confirmations(db, batch_id)
+
+    create_log(
+        db,
+        operator_id=current_user.get("user_id", "system"),
+        object_type="ROSTER_IMPORT",
+        object_id=batch_id,
+        operation_type="SYNC_CONFIRMATIONS",
         after_data=result,
     )
 
@@ -1084,11 +1315,15 @@ def _row_to_dict(row) -> dict:
         "normalized_name": row.normalized_name,
         "match_type": _enum_value(row.match_type),
         "row_status": _enum_value(row.row_status),
+        "import_action": _enum_value(row.import_action) if hasattr(row, "import_action") else None,
+        "review_status": _enum_value(row.review_status) if hasattr(row, "review_status") else None,
+        "execution_status": _enum_value(row.execution_status) if hasattr(row, "execution_status") else None,
         "raw_data": _safe_json(row.raw_data_json),
         "normalized_data": _safe_json(row.normalized_data_json),
         "diff": _safe_json(row.diff_json),
         "planned_actions": _safe_json(row.planned_actions_json),
         "result": _safe_json(row.result_json),
+        "lifecycle_decision": _safe_json(row.lifecycle_decision_json) if hasattr(row, "lifecycle_decision_json") else None,
         "created_at": str(row.created_at) if row.created_at else None,
         "updated_at": str(row.updated_at) if row.updated_at else None,
     }
@@ -1102,6 +1337,12 @@ def _issue_to_dict(issue) -> dict:
             return json.loads(val)
         except (json.JSONDecodeError, TypeError):
             return val
+
+    employee_name = None
+    row_no = None
+    if hasattr(issue, 'row') and issue.row:
+        employee_name = getattr(issue.row, 'normalized_name', None)
+        row_no = getattr(issue.row, 'row_no', None)
 
     return {
         "id": issue.id,
@@ -1118,10 +1359,13 @@ def _issue_to_dict(issue) -> dict:
         "allowed_actions": _safe_json(issue.allowed_actions_json) or [],
         "resolution_status": _enum_value(issue.resolution_status),
         "resolution_action": issue.resolution_action,
+        "resolution_value_json": _safe_json(issue.resolution_value_json),
         "resolution_note": issue.resolution_note,
         "resolved_at": str(issue.resolved_at) if issue.resolved_at else None,
         "created_at": str(issue.created_at) if issue.created_at else None,
         "updated_at": str(issue.updated_at) if issue.updated_at else None,
+        "employee_name": employee_name,
+        "row_no": row_no,
     }
 
 

@@ -125,6 +125,21 @@ class IssueItem(BaseModel):
     resolution_status: str = "PENDING"
     row_no: Optional[int] = None
     employee_name: Optional[str] = None
+    # ── 推荐处理字段 ──
+    source_value: Optional[str] = None
+    """Excel中的原始值"""
+    system_value: Optional[str] = None
+    """系统解析或计算结果"""
+    recommended_action: Optional[str] = None
+    """推荐处理动作"""
+    recommended_value: Optional[Any] = None
+    """推荐值"""
+    recommendation_text: Optional[str] = None
+    """推荐说明"""
+    auto_fixable: bool = False
+    """是否允许批量自动处理"""
+    requires_business_update: bool = False
+    """是否会修改员工业务数据"""
 
 
 class ResolveIssueRequest(BaseModel):
@@ -132,6 +147,24 @@ class ResolveIssueRequest(BaseModel):
     action: str = Field(..., description="操作")
     value: Optional[Any] = Field(default=None, description="处理值")
     note: Optional[str] = Field(default=None, description="备注")
+
+
+class BatchResolveRequest(BaseModel):
+    """批量处理问题请求。"""
+    issue_ids: list[int] = Field(..., description="问题ID列表")
+    action: str = Field(..., description="操作（APPLY_RECOMMENDATION / IGNORE）")
+    note: Optional[str] = Field(default=None, description="备注")
+
+
+class BatchResolveResponse(BaseModel):
+    """批量处理问题响应。"""
+    total: int = 0
+    resolved: int = 0
+    skipped: int = 0
+    conflicts: list[dict] = []
+    """因数据变化无法处理的问题列表"""
+    failed_ids: list[int] = []
+    """处理失败的问题ID列表"""
 
 
 # ============================================================

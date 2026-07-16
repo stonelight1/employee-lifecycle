@@ -22,9 +22,14 @@ class TestIssueActionEnum:
 
     def test_all_actions_have_handlers(self):
         """每个枚举值都有处理器。"""
+        # 这些由 resolve_issue 函数直接处理，不需要特定 handler
+        _NO_HANDLER_ACTIONS = {
+            IssueAction.DEFER,
+            IssueAction.ACCEPT,
+            IssueAction.APPLY_RECOMMENDATION,  # 批量专用，不注册单行 handler
+        }
         for action in IssueAction:
-            if action in (IssueAction.IGNORE, IssueAction.DEFER, IssueAction.ACCEPT):
-                # 这些由 resolve_issue 函数直接处理，不需要特定 handler
+            if action in _NO_HANDLER_ACTIONS:
                 continue
             assert get_handler(action.value) is not None, (
                 f"IssueAction.{action.name} 缺少处理器"

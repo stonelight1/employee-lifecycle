@@ -25,4 +25,5 @@ export interface ConfirmationListResponse {
 
 export interface ConfirmActionRequest {
   note?: string
+  action_data?: Record<string, unknown>
 }

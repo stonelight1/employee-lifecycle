@@ -36,3 +36,8 @@ class ConfirmationListResponse(BaseModel):
 class ConfirmActionRequest(BaseModel):
     """确认/拒绝/忽略操作的请求体。"""
     note: Optional[str] = Field(default=None, description="备注")
+    action_data: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="业务动作数据，用于补充缺失字段等场景。"
+        "例如 {\"actual_regularization_date\": \"2024-07-01\"}",
+    )

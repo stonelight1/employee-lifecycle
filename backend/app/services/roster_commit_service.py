@@ -29,7 +29,9 @@ from ..enums import (
     EmployeeStatus,
     EmploymentStatus,
     EmploymentType,
+    ExecutionStatus,
     FieldUpdateMode,
+    ImportAction,
     IssueSeverity,
     ProbationStatus,
     ProfileCompleteness,
@@ -76,6 +78,7 @@ from .roster_field_policy import (
     get_append_fields,
     get_field_policy,
 )
+from .roster_lifecycle_evaluator import evaluate_roster_lifecycle
 from .salary_parser import parse_salary_text
 from .benefit_parser import BENEFIT_PROFILE_FIELDS
 
@@ -226,6 +229,9 @@ def commit_import(
             if _enum_value(row.row_status) == RosterRowStatus.UNCHANGED.value:
                 summary["unchanged_count"] += 1
                 row.row_status = RosterRowStatus.IMPORTED
+                row.import_action = ImportAction.UNCHANGED
+                row.execution_status = ExecutionStatus.IMPORTED
+                row.review_status = "CLEAN"
                 db.flush()
                 continue
 
@@ -302,7 +308,7 @@ def _process_new_row(
     规则：
     - 缺少入职日期：仍创建员工档案，标记不完整，不创建任职。
       创建 MISSING_HIRE_DATE 确认提醒。
-    - 绝不根据日期自动激活或自动转正。
+    - 使用统一生命周期评估器决定转正状态。
     """
     data = _parse_row_data(row)
 
@@ -311,6 +317,16 @@ def _process_new_row(
 
     today = date.today()
     operator_id = operator.get("user_id", "system")
+
+    # ── 0. 获取或计算生命周期决策 ──
+    lifecycle = _get_lifecycle_decision(row, data, mode)
+    is_regularized = lifecycle.get("probation_status") == ProbationStatus.REGULARIZED.value
+    actual_reg_date = _parse_optional_date(lifecycle.get("actual_regularization_date"))
+    expected_reg_date = _parse_optional_date(lifecycle.get("expected_regularization_date"))
+    prob_status = ProbationStatus(lifecycle.get("probation_status", ProbationStatus.IN_PROGRESS.value))
+    emp_status_value = EmploymentStatus(lifecycle.get("employment_status", EmploymentStatus.ACTIVE.value))
+    prob_months = lifecycle.get("probation_months", 3)
+    should_create_tasks = lifecycle.get("should_create_probation_tasks", not is_regularized)
 
     # ── 1. 创建 Employee ──
     emp_data = {
@@ -331,7 +347,6 @@ def _process_new_row(
 
     # ── 2. 创建 EmployeeProfile ──
     profile_data = _extract_profile_data(data)
-    # 新行创建时，identity_card / gender / birth_date 属于初始值，无需确认，一并写入档案
     for field in ("identity_card", "birth_date", "gender"):
         if field in data and data.get(field) is not None:
             if field == "birth_date":
@@ -349,7 +364,6 @@ def _process_new_row(
     # ── 3. 检查入职日期 ──
     hire_date = data.get("hire_date")
     if not hire_date:
-        # 缺少入职日期：创建员工但不创建任职
         _set_profile_incomplete(db, employee_id)
         _create_hr_confirmation(
             db=db, employee_id=employee_id, employment_id=None,
@@ -362,8 +376,11 @@ def _process_new_row(
 
         row.employee_id = employee_id
         row.row_status = RosterRowStatus.IMPORTED
+        row.import_action = ImportAction.NEW
+        row.execution_status = ExecutionStatus.IMPORTED
+        row.review_status = "NEEDS_CONFIRMATION"
         db.flush()
-        return {"employee_id": employee_id, "employment_id": None, "action": "created_incomplete"}
+        return {"employee_id": employee_id, "employment_id": None, "action": "created_incomplete", "confirmations_created": 1}
 
     if not isinstance(hire_date, date):
         try:
@@ -371,23 +388,14 @@ def _process_new_row(
         except (ValueError, TypeError):
             raise ValidationError(f"行 {row.row_no} 入职日期格式无效: {hire_date}")
 
-    # ── 4. 判断转正状态（严格规则） ──
-    is_regularized = _determine_regularized_status(data, mode)
-
-    # ── 5. 判断在职状态（严格规则） ──
-    emp_status, prob_status = _determine_employment_status(
-        mode, hire_date, today, is_regularized,
-    )
-
-    # 设置试用期起止日期
-    prob_months = _validate_probation_months(data, is_regularized)
+    # ── 4. 设置试用期起止日期 ──
     probation_end = None
     probation_start = None
     if prob_status in (ProbationStatus.IN_PROGRESS, ProbationStatus.REGULARIZED):
         probation_end = calculate_probation_end_date(hire_date, prob_months)
         probation_start = hire_date
 
-    # ── 6. 检查是否已有有效任职 ──
+    # ── 5. 检查是否已有有效任职 ──
     existing_active = (
         db.query(EmploymentRecord)
         .filter(
@@ -423,13 +431,16 @@ def _process_new_row(
         employment = EmploymentRecord(
             employee_id=employee_id,
             employment_seq=employment_seq,
-            employment_status=emp_status,
+            employment_status=emp_status_value,
             hire_date=hire_date,
-            actual_hire_date=hire_date if emp_status != EmploymentStatus.PENDING else None,
+            actual_hire_date=hire_date if emp_status_value != EmploymentStatus.PENDING else None,
             probation_start_date=probation_start,
             probation_end_date=probation_end,
             probation_status=prob_status,
             probation_months=prob_months,
+            actual_regularization_date=actual_reg_date,
+            expected_regularization_date=expected_reg_date,
+            regularization_date=actual_reg_date or expected_reg_date,
             department=data.get("department"),
             position=data.get("position"),
             manager_name=data.get("manager_name"),
@@ -453,11 +464,11 @@ def _process_new_row(
         reversible=True,
     )
 
-    # ── 7. INITIALIZE 模式生成跟进任务 ──
-    if _enum_value(mode) == RosterImportMode.INITIALIZE.value and not is_regularized:
+    # ── 6. INITIALIZE 模式生成跟进任务 ──
+    if _enum_value(mode) == RosterImportMode.INITIALIZE.value and should_create_tasks:
         _generate_initialization_tasks(db, employment_id, hire_date)
 
-    # ── 8. 创建 Contract（仅 NEW 行直接创建）──
+    # ── 7. 创建 Contract（仅 NEW 行直接创建）──
     contract_data = _extract_contract_data(data)
     if contract_data:
         contract = EmploymentContract(
@@ -480,7 +491,7 @@ def _process_new_row(
             reversible=True,
         )
 
-    # ── 9. 创建 FinancialAccount（NEW 行直接创建）──
+    # ── 8. 创建 FinancialAccount（NEW 行直接创建）──
     account_data = _extract_account_data(data)
     seen_types: set[str] = set()
     for acct in account_data:
@@ -509,7 +520,7 @@ def _process_new_row(
             reversible=True,
         )
 
-    # ── 10. 创建 Compensation ──
+    # ── 9. 创建 Compensation ──
     salary_data = _extract_salary_data(data)
     if salary_data:
         comp = CompensationRecord(
@@ -530,7 +541,7 @@ def _process_new_row(
             reversible=True,
         )
 
-    # ── 11. 创建 Assessment ──
+    # ── 10. 创建 Assessment ──
     for assess in _extract_assessment_data(data):
         assessment = EmployeeAssessment(
             employee_id=employee_id,
@@ -549,18 +560,33 @@ def _process_new_row(
             reversible=True,
         )
 
-    # ── 12. 创建 Note ──
+    # ── 11. 创建 Note ──
     _create_note_if_needed(db, data, employee_id, employment_id, batch_id, row.id, row.row_no)
+
+    # ── 12. 创建生命周期确认事项 ──
+    lifecycle_conf_count = _create_lifecycle_confirmations(
+        db, employee_id, employment_id,
+        lifecycle.get("issues", []),
+        batch_id, row.id,
+    )
 
     # ── 13. 更新行状态 ──
     row.employee_id = employee_id
     row.row_status = RosterRowStatus.IMPORTED
+    row.import_action = ImportAction.NEW
+    row.execution_status = ExecutionStatus.IMPORTED
+    # 如果有待确认事项，标记审核状态
+    if lifecycle_conf_count > 0:
+        row.review_status = "PENDING"
+    else:
+        row.review_status = "CLEAN"
     db.flush()
 
     return {
         "employee_id": employee_id,
         "employment_id": employment_id,
         "action": "created",
+        "confirmations_created": lifecycle_conf_count,
     }
 
 
@@ -844,6 +870,11 @@ def _process_update_row(
 
     # ── 更新行状态 ──
     row.row_status = RosterRowStatus.IMPORTED
+    row.execution_status = ExecutionStatus.IMPORTED
+    if confirmations_created > 0:
+        row.review_status = "PENDING"
+    else:
+        row.review_status = "CLEAN"
     db.flush()
 
     return {
@@ -860,6 +891,8 @@ def _process_skip_row(
 ) -> None:
     """处理跳过的行 —— 仅标记状态，不做任何业务操作。"""
     row.row_status = RosterRowStatus.SKIPPED
+    row.execution_status = ExecutionStatus.SKIPPED
+    row.review_status = "IGNORED"
     db.flush()
 
 
@@ -878,15 +911,82 @@ def _parse_planned_action(row: RosterImportRow) -> dict:
 # ============================================================
 
 
+# ============================================================
+# 生命周期评估集成
+# ============================================================
+
+
+def _get_lifecycle_decision(
+    row: RosterImportRow,
+    data: dict,
+    mode: RosterImportMode | str,
+) -> dict:
+    """获取生命周期评估结果。
+
+    优先使用预览时保存的 lifecycle_decision_json，
+    没有时（如跳过预览阶段）则重新评估。
+    """
+    if row.lifecycle_decision_json:
+        try:
+            return json.loads(row.lifecycle_decision_json)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # 重新评估
+    mode_str = _enum_value(mode) if mode else None
+    result = evaluate_roster_lifecycle(data, mode_str)
+    row.lifecycle_decision_json = json.dumps(result, ensure_ascii=False, default=str)
+    return result
+
+
+def _create_lifecycle_confirmations(
+    db: DBSession,
+    employee_id: int,
+    employment_id: int | None,
+    lifecycle_issues: list[dict],
+    batch_id: int,
+    row_id: int,
+) -> int:
+    """根据生命周期评估中的问题创建 HR 确认事项。
+
+    Returns:
+        创建的确认事项数量。
+    """
+    count = 0
+    for iss in lifecycle_issues:
+        issue_code = iss.get("issue_code", "")
+        # 只有特定代码需要创建确认事项
+        if issue_code in ("MISSING_REGULARIZATION_DATE", "EMPLOYMENT_FORM_REGULARIZATION_CONFLICT"):
+            _create_hr_confirmation(
+                db=db,
+                employee_id=employee_id,
+                employment_id=employment_id,
+                issue_code=issue_code,
+                title=iss.get("title", ""),
+                description=iss.get("message"),
+                before=iss.get("old_value"),
+                after=iss.get("new_value"),
+                import_batch_id=batch_id,
+                import_row_id=row_id,
+            )
+            count += 1
+    return count
+
+
 def _determine_regularized_status(data: dict, mode: RosterImportMode) -> bool:
-    """判断员工是否应初始化为已转正。
+    """判断员工是否应初始化为已转正（备用函数，优先使用生命周期评估器）。
 
     严格规则（P0）：
-    1. Excel明确写"正式"/已转正 → 是。
-    2. Excel存在不晚于今天的实际转正日期 → 是。
+    1. Excel 写"正式" → 是。
+    2. Excel 存在不晚于今天的实际转正日期 → 是。
     3. 仅根据预计转正日期过去 → 否（绝不自动转正）。
     4. 仅根据试用期计算到期 → 否（绝不自动转正）。
     """
+    # 用工形式检查
+    raw_form = str(data.get("employment_type") or "").strip().lower()
+    if raw_form == "正式":
+        return True
+
     # 明确标记已转正
     if data.get("probation_status") == "REGULARIZED":
         return True

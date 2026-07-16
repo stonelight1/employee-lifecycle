@@ -5,7 +5,7 @@ from typing import Optional
 import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column
 
-from ..enums import RosterRowStatus
+from ..enums import RosterRowStatus, ImportAction, ReviewStatus, ExecutionStatus
 from .base import Base
 
 
@@ -23,6 +23,17 @@ class RosterImportRow(Base):
     row_status: Mapped[RosterRowStatus] = mapped_column(
         sa.String(30), default=RosterRowStatus.NEW, nullable=False
     )
+    # 三个独立状态字段（新逻辑）
+    import_action: Mapped[Optional[ImportAction]] = mapped_column(
+        sa.String(15), nullable=True, default=None
+    )
+    review_status: Mapped[Optional[ReviewStatus]] = mapped_column(
+        sa.String(25), nullable=True, default=None
+    )
+    execution_status: Mapped[Optional[ExecutionStatus]] = mapped_column(
+        sa.String(15), nullable=True, default=None
+    )
+    lifecycle_decision_json: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
     raw_data_json: Mapped[Optional[str]] = mapped_column(sa.Text)
     normalized_data_json: Mapped[Optional[str]] = mapped_column(sa.Text)
     diff_json: Mapped[Optional[str]] = mapped_column(sa.Text)
@@ -38,4 +49,6 @@ class RosterImportRow(Base):
     __table_args__ = (
         sa.UniqueConstraint("batch_id", "row_no", name="uq_roster_row_batch_row"),
         sa.Index("ix_roster_row_batch_status", "batch_id", "row_status"),
+        sa.Index("ix_roster_row_execution", "batch_id", "execution_status"),
+        sa.Index("ix_roster_row_review", "batch_id", "review_status"),
     )

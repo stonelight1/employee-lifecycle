@@ -24,6 +24,7 @@ from ..enums import (
     EmploymentStatus,
     OperationObjectType,
     ProbationStatus,
+    ReviewStatus,
 )
 from ..exceptions import (
     InvalidStateTransition,
@@ -39,6 +40,8 @@ from ..models import (
     HrConfirmationItem,
     SeparationRecord,
 )
+from ..models.roster_issue import RosterImportIssue
+from ..models.roster_row import RosterImportRow
 from ..models.note import EmployeeNote
 from .date_utils import parse_date_value as _parse_date
 from .operation_log_service import create_log
@@ -48,10 +51,10 @@ from .operation_log_service import create_log
 # 处理器注册表
 # ============================================================
 
-# 处理器签名: (db, item, before_data, after_data, operator_id, now) -> None
+# 处理器签名: (db, item, before_data, after_data, operator_id, now, action_data) -> None
 # 处理成功时不返回特殊值；失败时抛出异常。
 ConfirmationHandler = Callable[
-    [DBSession, HrConfirmationItem, Any, Any, str, datetime],
+    [DBSession, HrConfirmationItem, Any, Any, str, datetime, Optional[Any]],
     None,
 ]
 
@@ -84,6 +87,7 @@ def _handle_identity_card_change(
     after_data: Any,
     operator_id: str,
     now: datetime,
+    action_data: Any = None,
 ) -> None:
     """处理身份证号变更。"""
     if not after_data:
@@ -102,6 +106,7 @@ def _handle_birth_date_change(
     after_data: Any,
     operator_id: str,
     now: datetime,
+    action_data: Any = None,
 ) -> None:
     """处理出生日期变更。"""
     if not after_data:
@@ -120,6 +125,7 @@ def _handle_gender_change(
     after_data: Any,
     operator_id: str,
     now: datetime,
+    action_data: Any = None,
 ) -> None:
     """处理性别变更。"""
     if not after_data:
@@ -138,6 +144,7 @@ def _handle_name_change(
     after_data: Any,
     operator_id: str,
     now: datetime,
+    action_data: Any = None,
 ) -> None:
     """处理姓名变更。"""
     employee = db.query(Employee).filter(Employee.id == item.employee_id).first()
@@ -157,6 +164,7 @@ def _handle_contract_change(
     after_data: Any,
     operator_id: str,
     now: datetime,
+    action_data: Any = None,
 ) -> None:
     """处理合同变更：创建新合同记录。"""
     if not after_data:
@@ -187,6 +195,7 @@ def _handle_contract_company_change(
     after_data: Any,
     operator_id: str,
     now: datetime,
+    action_data: Any = None,
 ) -> None:
     """处理合同签订公司变更。"""
     _handle_contract_change(db, item, before_data, after_data, operator_id, now)
@@ -200,6 +209,7 @@ def _handle_contract_term_change(
     after_data: Any,
     operator_id: str,
     now: datetime,
+    action_data: Any = None,
 ) -> None:
     """处理合同期限变更。"""
     _handle_contract_change(db, item, before_data, after_data, operator_id, now)
@@ -213,6 +223,7 @@ def _handle_new_bank_account(
     after_data: Any,
     operator_id: str,
     now: datetime,
+    action_data: Any = None,
 ) -> None:
     """处理新增银行卡。
 
@@ -281,6 +292,7 @@ def _handle_new_alipay_account(
     after_data: Any,
     operator_id: str,
     now: datetime,
+    action_data: Any = None,
 ) -> None:
     """处理新增支付宝账号。
 
@@ -330,6 +342,7 @@ def _handle_actual_hire_date_change(
     after_data: Any,
     operator_id: str,
     now: datetime,
+    action_data: Any = None,
 ) -> None:
     """处理实际入职日期变更。
 
@@ -370,6 +383,7 @@ def _handle_pending_separation(
     after_data: Any,
     operator_id: str,
     now: datetime,
+    action_data: Any = None,
 ) -> None:
     """处理待离职确认。"""
     if not after_data:
@@ -412,6 +426,7 @@ def _handle_possible_reemployment(
     after_data: Any,
     operator_id: str,
     now: datetime,
+    action_data: Any = None,
 ) -> None:
     """处理再次入职。
 
@@ -515,6 +530,7 @@ def _handle_missing_hire_date(
     after_data: Any,
     operator_id: str,
     now: datetime,
+    action_data: Any = None,
 ) -> None:
     """处理缺少入职日期。
 
@@ -654,6 +670,7 @@ def _handle_employee_missing_from_roster(
     after_data: Any,
     operator_id: str,
     now: datetime,
+    action_data: Any = None,
 ) -> None:
     """处理员工不在花名册中的提醒 —— 仅确认知晓。"""
     pass
@@ -667,6 +684,7 @@ def _handle_salary_change(
     after_data: Any,
     operator_id: str,
     now: datetime,
+    action_data: Any = None,
 ) -> None:
     """处理薪酬变更确认 —— 薪酬记录已在提交时创建，确认即知晓。"""
     pass
@@ -680,6 +698,7 @@ def _handle_household_registration_change(
     after_data: Any,
     operator_id: str,
     now: datetime,
+    action_data: Any = None,
 ) -> None:
     """处理户籍地址变更确认。"""
     if not after_data:
@@ -698,6 +717,7 @@ def _handle_residence_address_change(
     after_data: Any,
     operator_id: str,
     now: datetime,
+    action_data: Any = None,
 ) -> None:
     """处理居住地址变更确认。"""
     if not after_data:
@@ -706,6 +726,79 @@ def _handle_residence_address_change(
     if new_value is None:
         return
     _update_profile_field(db, item.employee_id, "residence_address", new_value, operator_id, now)
+
+
+@_register(ConfirmationIssueCode.MISSING_REGULARIZATION_DATE)
+def _handle_missing_regularization_date(
+    db: DBSession,
+    item: HrConfirmationItem,
+    before_data: Any,
+    after_data: Any,
+    operator_id: str,
+    now: datetime,
+    action_data: Any = None,
+) -> None:
+    """处理正式员工缺少转正日期 —— 接受实际转正日期并更新任职记录。
+
+    action_data 支持:
+      - actual_regularization_date: str (ISO 格式日期)
+      - confirmation_note: str
+    不传日期时仅确认知晓（保持原有 pass 行为）。
+    """
+    # 从 action_data 获取实际转正日期
+    reg_date_str = None
+    if action_data and isinstance(action_data, dict):
+        reg_date_str = action_data.get("actual_regularization_date")
+
+    if not reg_date_str:
+        # 没有提供转正日期，仅确认知晓，不做业务修改
+        return
+
+    reg_date = _parse_date(reg_date_str)
+    if not reg_date:
+        raise ValidationError(f"转正日期格式无效: {reg_date_str}")
+
+    # 查找当前有效任职
+    employment = (
+        db.query(EmploymentRecord)
+        .filter(
+            EmploymentRecord.employee_id == item.employee_id,
+            EmploymentRecord.is_deleted == False,
+        )
+        .order_by(EmploymentRecord.employment_seq.desc())
+        .first()
+    )
+    if not employment:
+        return
+
+    # 更新任职记录的转正信息
+    if employment.actual_hire_date and reg_date < employment.actual_hire_date:
+        raise ValidationError("实际转正日期不能早于入职日期")
+
+    employment.actual_regularization_date = reg_date
+    employment.regularization_date = reg_date
+    employment.expected_regularization_date = max(
+        reg_date,
+        (employment.expected_regularization_date or reg_date),
+    )
+    employment.probation_status = ProbationStatus.REGULARIZED.value
+    employment.updated_by = operator_id
+    employment.updated_at = now
+    db.flush()
+
+
+@_register(ConfirmationIssueCode.EMPLOYMENT_FORM_REGULARIZATION_CONFLICT)
+def _handle_employment_form_regularization_conflict(
+    db: DBSession,
+    item: HrConfirmationItem,
+    before_data: Any,
+    after_data: Any,
+    operator_id: str,
+    now: datetime,
+    action_data: Any = None,
+) -> None:
+    """处理用工形式与转正日期冲突 —— 仅确认知晓。"""
+    pass
 
 
 # 为了兼容旧 issue_code，注册别名
@@ -803,6 +896,9 @@ def list_confirmation_items(
     db: DBSession,
     status: str | None = None,
     employee_id: int | None = None,
+    import_batch_id: int | None = None,
+    import_row_id: int | None = None,
+    issue_code: str | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[dict], int, int]:
@@ -813,6 +909,12 @@ def list_confirmation_items(
         query = query.filter(HrConfirmationItem.item_status == status)
     if employee_id is not None:
         query = query.filter(HrConfirmationItem.employee_id == employee_id)
+    if import_batch_id is not None:
+        query = query.filter(HrConfirmationItem.import_batch_id == import_batch_id)
+    if import_row_id is not None:
+        query = query.filter(HrConfirmationItem.import_row_id == import_row_id)
+    if issue_code:
+        query = query.filter(HrConfirmationItem.issue_code == issue_code)
 
     total = query.count()
 
@@ -896,6 +998,7 @@ def _update_profile_field(
     new_value: Any,
     operator_id: str,
     now: datetime,
+    action_data: Any = None,
 ) -> None:
     """更新员工档案字段。"""
     profile = db.query(EmployeeProfile).filter(
@@ -927,15 +1030,17 @@ def confirm_item(
     item_id: int,
     operator: dict,
     note: str | None = None,
+    action_data: dict[str, Any] | None = None,
 ) -> dict:
     """确认事项并执行业务动作。
 
     流程：
     1. 加载事项，检查状态为 PENDING。
     2. 查找对应处理器。
-    3. 执行业务操作。
+    3. 执行业务操作（传递 action_data 供需要填写数据的处理器）。
     4. 只有业务操作成功，才能改成 CONFIRMED。
     5. 业务操作失败时保持 PENDING。
+    6. 同步更新关联 issue 和 row 的 review_status。
     """
     item = _get_item(db, item_id)
     _ensure_pending(item)
@@ -959,11 +1064,14 @@ def confirm_item(
         )
 
     # 执行业务操作（失败时抛出异常）
-    handler(db, item, before_data, after_data, operator_id, now)
+    handler(db, item, before_data, after_data, operator_id, now, action_data)
 
     # 只有业务操作成功后，才能更新状态
     item.item_status = ConfirmationItemStatus.CONFIRMED.value
     item.handled_at = now
+
+    # 同步导入问题和行的审核状态
+    _sync_review_status(db, item, ConfirmationItemStatus.CONFIRMED)
 
     db.flush()
 
@@ -1000,6 +1108,8 @@ def reject_item(
     item.item_status = ConfirmationItemStatus.REJECTED.value
     item.handled_at = now
 
+    _sync_review_status(db, item, ConfirmationItemStatus.REJECTED)
+
     db.flush()
 
     create_log(
@@ -1034,6 +1144,8 @@ def ignore_item(
     item.item_status = ConfirmationItemStatus.IGNORED.value
     item.handled_at = now
 
+    _sync_review_status(db, item, ConfirmationItemStatus.IGNORED)
+
     db.flush()
 
     create_log(
@@ -1049,6 +1161,282 @@ def ignore_item(
 
     db.flush()
     return _to_dict(item)
+
+
+# ============================================================
+# 导入问题状态同步
+# ============================================================
+
+
+def _sync_review_status(
+    db: DBSession,
+    item: HrConfirmationItem,
+    new_status: ConfirmationItemStatus,
+) -> None:
+    """同步确认事项状态到关联的导入问题和导入行的审核状态。
+
+    映射关系:
+      CONFIRMED → RosterImportIssue.RESOLVED
+      REJECTED  → RosterImportIssue.RESOLVED (resolution_action = REJECT)
+      IGNORED   → RosterImportIssue.IGNORED
+
+    只有该行没有其他 PENDING 问题时，RosterImportRow.review_status = RESOLVED
+    仍有其他问题时保持 PENDING。
+    """
+    if not item.import_batch_id and not item.import_row_id:
+        return
+
+    from ..models.roster_issue import RosterImportIssue
+    from ..models.roster_row import RosterImportRow
+
+    now = datetime.now()
+
+    # 查找关联的导入问题 (通过 import_batch_id + import_row_id + issue_code)
+    if item.import_batch_id and item.import_row_id:
+        linked_issues = (
+            db.query(RosterImportIssue)
+            .filter(
+                RosterImportIssue.batch_id == item.import_batch_id,
+                RosterImportIssue.row_id == item.import_row_id,
+                RosterImportIssue.issue_code == item.issue_code,
+                RosterImportIssue.resolution_status.in_(["PENDING", "DEFERRED"]),
+            )
+            .all()
+        )
+
+        for issue in linked_issues:
+            if new_status == ConfirmationItemStatus.CONFIRMED:
+                issue.resolution_status = "RESOLVED"
+                issue.resolution_action = "ACCEPT"
+            elif new_status == ConfirmationItemStatus.REJECTED:
+                issue.resolution_status = "RESOLVED"
+                issue.resolution_action = "REJECT"
+            elif new_status == ConfirmationItemStatus.IGNORED:
+                issue.resolution_status = "IGNORED"
+                issue.resolution_action = "IGNORE"
+            issue.resolved_at = now
+            db.flush()
+
+    # 更新行的 review_status
+    if item.import_row_id:
+        row = db.query(RosterImportRow).filter(
+            RosterImportRow.id == item.import_row_id,
+        ).first()
+        if row:
+            # 检查该行是否还有其他 PENDING 确认事项
+            remaining_pending = (
+                db.query(HrConfirmationItem)
+                .filter(
+                    HrConfirmationItem.import_row_id == item.import_row_id,
+                    HrConfirmationItem.item_status == ConfirmationItemStatus.PENDING.value,
+                    HrConfirmationItem.id != item.id,
+                )
+                .count()
+            )
+            # 检查该行是否还有其他 PENDING 导入问题
+            remaining_issues = (
+                db.query(RosterImportIssue)
+                .filter(
+                    RosterImportIssue.row_id == item.import_row_id,
+                    RosterImportIssue.resolution_status.in_(["PENDING", "DEFERRED"]),
+                )
+                .count()
+            )
+
+            if remaining_pending == 0 and remaining_issues == 0:
+                row.review_status = ReviewStatus.RESOLVED.value
+            else:
+                row.review_status = ReviewStatus.PENDING.value
+            db.flush()
+
+
+# ============================================================
+# 批量同步确认事项（用于已成功导入但未生成 HR 确认事项的批次）
+# ============================================================
+
+
+def sync_roster_issues_to_confirmations(
+    db: DBSession,
+    batch_id: int,
+) -> dict:
+    """将指定批次中未处理的导入问题转换成 HR 确认事项。
+
+    只处理:
+    - 批次状态为 SUCCEEDED
+    - 问题状态为 PENDING
+    - 问题关联的行已有 employee_id（已创建员工）
+
+    使用稳定幂等键（source_id = "roster_issue:{issue_id}"）防止重复创建。
+
+    Returns:
+        {
+            "scanned_issue_count": int,
+            "created_confirmation_count": int,
+            "existing_confirmation_count": int,
+            "unconvertible_count": int,
+            "unconvertible_items": list[{"issue_id": int, "row_no": int, "reason": str}]
+        }
+    """
+    from ..models.roster_batch import RosterImportBatch
+    from ..models.roster_issue import RosterImportIssue
+    from ..models.roster_row import RosterImportRow
+
+    batch = db.query(RosterImportBatch).filter(
+        RosterImportBatch.id == batch_id,
+    ).first()
+    if not batch:
+        raise ResourceNotFound(f"导入批次不存在: {batch_id}")
+
+    from ..enums import RosterBatchStatus
+    if batch.batch_status != RosterBatchStatus.SUCCEEDED.value:
+        raise InvalidStateTransition(
+            f"批次状态 {batch.batch_status} 不是 SUCCEEDED，不能同步确认事项"
+        )
+
+    # 加载该批次所有未处理的问题
+    issues = (
+        db.query(RosterImportIssue)
+        .filter(
+            RosterImportIssue.batch_id == batch_id,
+            RosterImportIssue.resolution_status == "PENDING",
+        )
+        .all()
+    )
+
+    # 加载行信息
+    rows = {
+        r.id: r
+        for r in db.query(RosterImportRow)
+        .filter(RosterImportRow.batch_id == batch_id)
+        .all()
+    }
+
+    # 定义问题类型到确认事项的映射
+    ROSTER_ISSUE_TO_CONFIRMATION_CODE: dict[str, str] = {
+        "MISSING_HIRE_DATE": ConfirmationIssueCode.MISSING_HIRE_DATE.value,
+        "MISSING_REGULARIZATION_DATE": ConfirmationIssueCode.MISSING_REGULARIZATION_DATE.value,
+        "IDENTITY_CARD_CHANGE": ConfirmationIssueCode.IDENTITY_CARD_CHANGE.value,
+        "BIRTH_DATE_CHANGE": ConfirmationIssueCode.BIRTH_DATE_CHANGE.value,
+        "GENDER_CHANGE": ConfirmationIssueCode.GENDER_CHANGE.value,
+        "NAME_CHANGE": ConfirmationIssueCode.NAME_CHANGE.value,
+        "CONTRACT_CHANGE": ConfirmationIssueCode.CONTRACT_CHANGE.value,
+        "NEW_BANK_ACCOUNT": ConfirmationIssueCode.NEW_BANK_ACCOUNT.value,
+        "NEW_ALIPAY_ACCOUNT": ConfirmationIssueCode.NEW_ALIPAY_ACCOUNT.value,
+        "PENDING_SEPARATION": ConfirmationIssueCode.PENDING_SEPARATION.value,
+        "POSSIBLE_REEMPLOYMENT": ConfirmationIssueCode.POSSIBLE_REEMPLOYMENT.value,
+        "ACTUAL_HIRE_DATE_CHANGE": ConfirmationIssueCode.ACTUAL_HIRE_DATE_CHANGE.value,
+        "SALARY_CHANGE": ConfirmationIssueCode.SALARY_CHANGE.value,
+        "HOUSEHOLD_REGISTRATION_CHANGE": ConfirmationIssueCode.HOUSEHOLD_REGISTRATION_CHANGE.value,
+        "RESIDENCE_ADDRESS_CHANGE": ConfirmationIssueCode.RESIDENCE_ADDRESS_CHANGE.value,
+        "EMPLOYMENT_FORM_REGULARIZATION_CONFLICT": ConfirmationIssueCode.EMPLOYMENT_FORM_REGULARIZATION_CONFLICT.value,
+    }
+
+    scanned = len(issues)
+    created = 0
+    existing = 0
+    unconvertible = 0
+    unconvertible_items: list[dict] = []
+
+    for issue in issues:
+        row = rows.get(issue.row_id) if issue.row_id else None
+
+        # 跳过没有关联行的（批次级问题）
+        if not row:
+            unconvertible += 1
+            unconvertible_items.append({
+                "issue_id": issue.id,
+                "row_no": 0,
+                "reason": "问题没有关联数据行",
+            })
+            continue
+
+        # 跳过没有 employee_id 的（员工未创建）
+        if not row.employee_id:
+            unconvertible += 1
+            unconvertible_items.append({
+                "issue_id": issue.id,
+                "row_no": row.row_no,
+                "reason": "该行尚未创建员工（无 employee_id）",
+            })
+            continue
+
+        # 查找映射代码
+        confirmation_code = ROSTER_ISSUE_TO_CONFIRMATION_CODE.get(issue.issue_code)
+        if not confirmation_code:
+            unconvertible += 1
+            unconvertible_items.append({
+                "issue_id": issue.id,
+                "row_no": row.row_no,
+                "reason": f"问题类型 {issue.issue_code} 没有对应确认事项类型",
+            })
+            continue
+
+        # 幂等键
+        source_id = f"roster_issue:{issue.id}"
+
+        # 检查是否已存在
+        existing_item = (
+            db.query(HrConfirmationItem)
+            .filter(
+                HrConfirmationItem.employee_id == row.employee_id,
+                HrConfirmationItem.issue_code == confirmation_code,
+                HrConfirmationItem.source_id == source_id,
+                HrConfirmationItem.item_status == ConfirmationItemStatus.PENDING.value,
+            )
+            .first()
+        )
+        if existing_item:
+            existing += 1
+            continue
+
+        old_val = None
+        new_val = None
+        try:
+            if issue.old_value_json:
+                old_val = json.loads(issue.old_value_json)
+            if issue.new_value_json:
+                new_val = json.loads(issue.new_value_json)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # 创建确认事项
+        now = datetime.now()
+        item = HrConfirmationItem(
+            employee_id=row.employee_id,
+            source_type="ROSTER_IMPORT",
+            source_id=source_id,
+            issue_code=confirmation_code,
+            title=issue.title or f"【同步】待确认事项",
+            description=issue.message,
+            before_data_json=json.dumps(old_val, default=str, ensure_ascii=False) if old_val else None,
+            after_data_json=json.dumps(new_val, default=str, ensure_ascii=False) if new_val else None,
+            import_batch_id=batch_id,
+            import_row_id=row.id,
+            item_status=ConfirmationItemStatus.PENDING.value,
+            created_at=now,
+        )
+        db.add(item)
+        db.flush()
+        created += 1
+
+        # 更新行的 review_status
+        row.review_status = ReviewStatus.PENDING.value
+        db.flush()
+
+    # 更新批次的 confirmation_count
+    total_confirmations = db.query(HrConfirmationItem).filter(
+        HrConfirmationItem.import_batch_id == batch_id,
+    ).count()
+    batch.confirmation_count = total_confirmations
+    db.flush()
+
+    return {
+        "scanned_issue_count": scanned,
+        "created_confirmation_count": created,
+        "existing_confirmation_count": existing,
+        "unconvertible_count": unconvertible,
+        "unconvertible_items": unconvertible_items,
+    }
 
 
 # ============================================================

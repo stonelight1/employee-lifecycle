@@ -2,6 +2,9 @@
 
 字段分类全部使用统一策略（roster_field_policy），
 不再各自维护字段列表。
+
+生命周期判断全部使用统一评估器（roster_lifecycle_evaluator），
+不再在预览和提交中使用不同规则。
 """
 
 from __future__ import annotations
@@ -17,10 +20,13 @@ from ..enums import (
     AccountType,
     EmployeeStatus,
     EmploymentStatus,
+    ExecutionStatus,
+    ImportAction,
     IssueAction,
     IssueSeverity,
     ProbationStatus,
     ResolutionStatus,
+    ReviewStatus,
     RosterBatchStatus,
     RosterImportMode,
     RosterRowStatus,
@@ -44,6 +50,7 @@ from .roster_field_policy import (
     get_all_field_keys,
     get_field_policy,
 )
+from .roster_lifecycle_evaluator import evaluate_roster_lifecycle
 
 try:
     from .roster_mapping_service import resolve_value_alias
@@ -140,9 +147,13 @@ def generate_preview(db: DBSession, batch_id: int) -> dict:
         n = row.normalized_name or ""
         # 检查是否合作地区
         new_data = _parse_row_data(row)
-        if is_cooperation_region(new_data):
+        region_skip, region_issue = _check_cooperation_region(new_data, row)
+        if region_skip:
             cooperation_row_ids.add(row.id)
             row.row_status = RosterRowStatus.SKIPPED
+            row.import_action = ImportAction.SKIP
+            row.review_status = ReviewStatus.IGNORED
+            row.execution_status = ExecutionStatus.SKIPPED
             row.planned_actions_json = json.dumps({
                 "action": "SKIP",
                 "reason_code": "REGION_COOPERATION",
@@ -164,6 +175,7 @@ def generate_preview(db: DBSession, batch_id: int) -> dict:
         "skipped_count": 0,
         "blocker_count": 0,
         "warning_count": 0,
+        "info_count": 0,
         "total_rows": len(rows),
     }
 
@@ -177,13 +189,15 @@ def generate_preview(db: DBSession, batch_id: int) -> dict:
                 "normalized_name": row.normalized_name,
                 "matched_employee_name": None,
                 "row_status": RosterRowStatus.SKIPPED.value,
+                "import_action": ImportAction.SKIP.value,
+                "review_status": ReviewStatus.IGNORED.value,
+                "execution_status": ExecutionStatus.SKIPPED.value,
                 "diff_fields": [],
                 "issues": [{
                     "issue_code": "REGION_COOPERATION",
                     "severity": "INFO",
                     "title": "地区为合作，不纳入系统",
-                    "message": "该员工所在地区标记为「合作」，"
-                    "跳过导入员工生命周期系统。",
+                    "message": "该员工所在地区标记为「合作」，跳过导入员工生命周期系统。",
                     "field_key": "work_city",
                     "allowed_actions": [],
                 }],
@@ -196,7 +210,7 @@ def generate_preview(db: DBSession, batch_id: int) -> dict:
         matched = employee_map.get(row.normalized_name, [])
         current_state = batch_state_map.get(matched[0].id, {}) if len(matched) == 1 else {}
 
-        row_status, diff_list, issue_list = _classify_row(
+        row_status, diff_list, issue_list, import_action_value, review_status_value = _classify_row(
             db,
             row,
             matched,
@@ -210,18 +224,35 @@ def generate_preview(db: DBSession, batch_id: int) -> dict:
                 iss.setdefault("employee_id", matched[0].id)
 
         row.row_status = row_status
+        if import_action_value:
+            row.import_action = import_action_value
+        if review_status_value:
+            row.review_status = review_status_value
+        row.execution_status = ExecutionStatus.PENDING
+        # 使用与 _classify_row 一致的活跃匹配逻辑写入 employee_id
+        matched_employee: Employee | None = None
+        if matched:
+            active_matches = [
+                e for e in matched
+                if not e.is_deleted and e.employee_status != EmployeeStatus.ENTRY_ERROR.value
+            ]
+            if len(active_matches) == 1:
+                matched_employee = active_matches[0]
+                row.employee_id = matched_employee.id
         if diff_list:
             row.diff_json = json.dumps(diff_list, ensure_ascii=False, default=str)
 
         _accumulate_summary(summary, row_status, issue_list)
 
-        matched_employee = matched[0] if len(matched) == 1 else None
         row_preview = {
             "row_no": row.row_no,
             "employee_id": matched_employee.id if matched_employee else None,
             "normalized_name": row.normalized_name,
             "matched_employee_name": matched_employee.name if matched_employee else None,
             "row_status": row_status.value,
+            "import_action": import_action_value.value if import_action_value else None,
+            "review_status": review_status_value.value if review_status_value else None,
+            "execution_status": ExecutionStatus.PENDING.value,
             "diff_fields": diff_list,
             "issues": [_issue_to_dict(iss) for iss in issue_list],
             "can_skip": row_status
@@ -367,10 +398,11 @@ def _batch_load_current_states(
             state["employment_status"] = _enum_value(employment.employment_status) if employment.employment_status else None
             state["probation_months"] = employment.probation_months
             state["regularization_date"] = employment.regularization_date
+            state["actual_regularization_date"] = employment.actual_regularization_date
             state["employment_type"] = _enum_value(employment.employment_type) if employment.employment_type else None
         else:
             for f in ("work_city", "work_mode", "team_name", "hire_date", "employment_status",
-                      "probation_months", "regularization_date", "employment_type"):
+                      "probation_months", "regularization_date", "actual_regularization_date", "employment_type"):
                 state[f] = None
 
         contract = contracts.get(eid)
@@ -416,6 +448,27 @@ def _match_employees_batch(
 
 
 # ============================================================
+# 合作地区检查
+# ============================================================
+
+
+def _check_cooperation_region(
+    new_data: dict, row: RosterImportRow
+) -> tuple[bool, dict | None]:
+    """检查是否合作地区，返回 (is_skip, issue)。"""
+    if is_cooperation_region(new_data):
+        return True, {
+            "issue_code": "REGION_COOPERATION",
+            "severity": IssueSeverity.INFO.value,
+            "title": "地区为合作，不纳入系统",
+            "message": "该员工所在地区标记为「合作」，跳过导入员工生命周期系统。",
+            "field_key": "work_city",
+            "allowed_actions": [],
+        }
+    return False, None
+
+
+# ============================================================
 # 行分类
 # ============================================================
 
@@ -426,12 +479,17 @@ def _classify_row(
     matched_employees: list[Employee],
     all_rows_by_name: dict[str, list[RosterImportRow]],
     current_state: dict[str, Any] | None = None,
-) -> tuple[RosterRowStatus, list[dict], list[dict]]:
-    """对单行数据进行分类。"""
+) -> tuple[RosterRowStatus, list[dict], list[dict], ImportAction | None, ReviewStatus | None]:
+    """对单行数据进行分类。
+
+    Returns:
+        (row_status, diff_list, issue_list, import_action, review_status)
+    """
     name = row.normalized_name
     issues: list[dict] = []
+    new_data = _parse_row_data(row)
 
-    # 姓名为空
+    # ── 姓名检查（BLOCKER）──
     if not name:
         issues.append(
             _build_issue(
@@ -443,9 +501,9 @@ def _classify_row(
                 allowed_actions=[IssueAction.SKIP_ROW.value, IssueAction.MODIFY_VALUE.value],
             )
         )
-        return (RosterRowStatus.ERROR, [], issues)
+        return (RosterRowStatus.ERROR, [], issues, ImportAction.NEW, ReviewStatus.ERROR)
 
-    # Excel 内重复姓名
+    # ── Excel 内重复姓名 ──
     same_name_rows = all_rows_by_name.get(name, [])
     if len(same_name_rows) > 1:
         issues.append(
@@ -459,15 +517,15 @@ def _classify_row(
                 allowed_actions=[IssueAction.SKIP_ROW.value, IssueAction.SELECT_EMPLOYEE.value],
             )
         )
-        return (RosterRowStatus.ERROR, [], issues)
+        return (RosterRowStatus.ERROR, [], issues, ImportAction.NEW, ReviewStatus.ERROR)
 
-    # 筛选活跃匹配结果
+    # ── 筛选活跃匹配结果 ──
     active_matched = [
         e for e in matched_employees
         if not e.is_deleted and e.employee_status != EmployeeStatus.ENTRY_ERROR.value
     ]
 
-    # 多条匹配
+    # ── 多条匹配 ──
     if len(active_matched) > 1:
         candidate_info = "; ".join(
             f"{e.name}(ID:{e.id}, no:{e.employee_no or '—'})" for e in active_matched
@@ -483,9 +541,9 @@ def _classify_row(
                 allowed_actions=[IssueAction.SKIP_ROW.value, IssueAction.SELECT_EMPLOYEE.value],
             )
         )
-        return (RosterRowStatus.ERROR, [], issues)
+        return (RosterRowStatus.ERROR, [], issues, ImportAction.NEW, ReviewStatus.ERROR)
 
-    # 无匹配
+    # ── 无匹配 = NEW 行 ──
     if len(active_matched) == 0:
         inactive = [
             e for e in matched_employees
@@ -505,12 +563,52 @@ def _classify_row(
                     allowed_actions=[IssueAction.SKIP_ROW.value, IssueAction.CREATE_NEW_EMPLOYEE.value],
                 )
             )
-            return (RosterRowStatus.ERROR, [], issues)
+            return (RosterRowStatus.ERROR, [], issues, ImportAction.NEW, ReviewStatus.ERROR)
 
-        # NEW 行：入职日期为 WARNING，不是 BLOCKER
-        return (RosterRowStatus.NEW, [], issues)
+        # NEW 行：执行完整生命周期评估和所有数据质量检查
+        lifecycle_result = evaluate_roster_lifecycle(new_data)
+        lc_issues = lifecycle_result.get("issues", [])
 
-    # 精确匹配到一个
+        # 合并生命周期问题的严重级别到 issues
+        for lc_issue in lc_issues:
+            sev = IssueSeverity(lc_issue.get("severity", IssueSeverity.WARNING.value))
+            issues.append(
+                _build_issue(
+                    issue_code=lc_issue.get("issue_code", "UNKNOWN"),
+                    severity=sev,
+                    title=lc_issue.get("title", ""),
+                    message=lc_issue.get("message"),
+                    field_key=lc_issue.get("field_key"),
+                    old_value=lc_issue.get("old_value"),
+                    new_value=lc_issue.get("new_value"),
+                    allowed_actions=lc_issue.get("allowed_actions", []),
+                )
+            )
+
+        # 保存生命周期决策到行
+        row.lifecycle_decision_json = json.dumps(lifecycle_result, ensure_ascii=False, default=str)
+
+        # 薪酬文本解析警告
+        _add_salary_issues(new_data, issues)
+        # PDP 可疑内容检查
+        _add_pdp_issues(new_data, issues)
+
+        # 决定审核状态
+        has_blocker = any(
+            iss.get("severity") == IssueSeverity.BLOCKER.value for iss in issues
+        )
+        has_warning = any(
+            iss.get("severity") == IssueSeverity.WARNING.value for iss in issues
+        )
+
+        if has_blocker:
+            return (RosterRowStatus.ERROR, [], issues, ImportAction.NEW, ReviewStatus.ERROR)
+        if has_warning:
+            return (RosterRowStatus.NEEDS_CONFIRMATION, [], issues, ImportAction.NEW, ReviewStatus.NEEDS_CONFIRMATION)
+
+        return (RosterRowStatus.NEW, [], issues, ImportAction.NEW, ReviewStatus.CLEAN)
+
+    # ── 精确匹配到一个 = UPDATE/UNCHANGED ──
     employee = active_matched[0]
 
     # 已离职 → 重聘
@@ -535,10 +633,30 @@ def _classify_row(
     if current_state is None:
         current_state = _get_current_state_single(db, employee)
 
-    new_data = _parse_row_data(row)
-
     diff_list = _compute_diff(current_state, new_data)
 
+    # 更新行也执行生命周期评估
+    lifecycle_result = evaluate_roster_lifecycle(new_data)
+    lc_issues = lifecycle_result.get("issues", [])
+    for lc_issue in lc_issues:
+        sev = IssueSeverity(lc_issue.get("severity", IssueSeverity.WARNING.value))
+        issues.append(
+            _build_issue(
+                issue_code=lc_issue.get("issue_code", "UNKNOWN"),
+                severity=sev,
+                title=lc_issue.get("title", ""),
+                message=lc_issue.get("message"),
+                field_key=lc_issue.get("field_key"),
+                old_value=lc_issue.get("old_value"),
+                new_value=lc_issue.get("new_value"),
+                allowed_actions=lc_issue.get("allowed_actions", []),
+            )
+        )
+
+    # 保存生命周期决策
+    row.lifecycle_decision_json = json.dumps(lifecycle_result, ensure_ascii=False, default=str)
+
+    # 额外问题生成
     extra_issues = _generate_issues(
         row, matched_employees, None, diff_list, all_rows_by_name, new_data, current_state
     )
@@ -547,6 +665,8 @@ def _classify_row(
     # 决定最终状态
     if not diff_list:
         status = RosterRowStatus.UNCHANGED
+        import_action = ImportAction.UNCHANGED
+        review_status = ReviewStatus.CLEAN
     else:
         has_confirmation = any(
             d.get("change_type") == "NEEDS_CONFIRMATION" for d in diff_list
@@ -554,14 +674,31 @@ def _classify_row(
         has_update = any(
             d.get("change_type") == "UPDATE" for d in diff_list
         )
-        if has_confirmation:
+        has_blocker = any(
+            iss.get("severity") == IssueSeverity.BLOCKER.value for iss in issues
+        )
+        has_warning = any(
+            iss.get("severity") == IssueSeverity.WARNING.value for iss in issues
+        )
+
+        if has_blocker:
+            status = RosterRowStatus.ERROR
+            import_action = ImportAction.UPDATE
+            review_status = ReviewStatus.ERROR
+        elif has_confirmation or has_warning:
             status = RosterRowStatus.NEEDS_CONFIRMATION
+            import_action = ImportAction.UPDATE
+            review_status = ReviewStatus.NEEDS_CONFIRMATION
         elif has_update:
             status = RosterRowStatus.UPDATE
+            import_action = ImportAction.UPDATE
+            review_status = ReviewStatus.CLEAN
         else:
             status = RosterRowStatus.UNCHANGED
+            import_action = ImportAction.UNCHANGED
+            review_status = ReviewStatus.CLEAN
 
-    return (status, diff_list, issues)
+    return (status, diff_list, issues, import_action, review_status)
 
 
 # ============================================================
@@ -672,6 +809,42 @@ def _parse_row_data(row: RosterImportRow) -> dict:
 # ============================================================
 
 
+def _add_salary_issues(data: dict, issues: list[dict]) -> None:
+    """薪资文本解析问题。"""
+    salary_text = data.get("raw_salary_text")
+    if salary_text and isinstance(salary_text, str) and salary_text.strip():
+        if not _looks_like_parsed_salary(salary_text):
+            issues.append(
+                _build_issue(
+                    issue_code="SALARY_UNPARSABLE",
+                    severity=IssueSeverity.WARNING,
+                    title="薪酬文本可能无法自动解析",
+                    message=f"薪酬文本「{salary_text[:100]}」格式不标准，系统可能无法完全自动解析。",
+                    field_key="raw_salary_text",
+                    new_value=salary_text[:200],
+                    allowed_actions=[IssueAction.IGNORE.value, IssueAction.MODIFY_VALUE.value],
+                )
+            )
+
+
+def _add_pdp_issues(data: dict, issues: list[dict]) -> None:
+    """PDP 测评内容检查。"""
+    pdp_text = data.get("pdp_result") or data.get("assessment_result")
+    if pdp_text and isinstance(pdp_text, str) and pdp_text.strip():
+        if _looks_suspicious_pdp(pdp_text):
+            issues.append(
+                _build_issue(
+                    issue_code="PDP_CONTENT_SUSPICIOUS",
+                    severity=IssueSeverity.WARNING,
+                    title="PDP 测评内容疑似异常",
+                    message=f"PDP 测评文本「{pdp_text[:100]}」看起来不符合预期的测评报告格式。",
+                    field_key="pdp_result",
+                    new_value=pdp_text[:200],
+                    allowed_actions=[IssueAction.IGNORE.value, IssueAction.MODIFY_VALUE.value],
+                )
+            )
+
+
 def _generate_issues(
     row: RosterImportRow,
     matched_employees: list[Employee],
@@ -681,7 +854,11 @@ def _generate_issues(
     new_data: dict[str, Any] | None = None,
     current_state: dict[str, Any] | None = None,
 ) -> list[dict]:
-    """根据行数据、匹配结果和差异生成额外问题。"""
+    """根据行数据、匹配结果和差异生成额外问题。
+
+    此函数只在有匹配员工的 Update 行调用。
+    NEW 行的所有问题已在中生命周期评估器 + _add_salary_issues + _add_pdp_issues 生成。
+    """
     issues: list[dict] = []
     name = row.normalized_name
 
@@ -706,163 +883,8 @@ def _generate_issues(
             )
         )
 
-    # ── 试用期月份数校验（BLOCKER：1-6个月）──
-    raw_pm = new_data.get("probation_months")
-    if raw_pm is not None:
-        try:
-            pm = int(raw_pm)
-            if pm <= 0:
-                issues.append(
-                    _build_issue(
-                        issue_code="INVALID_PROBATION_MONTHS",
-                        severity=IssueSeverity.BLOCKER,
-                        title="试用期月份数不合法",
-                        message=f"试用期月数必须为 1-6 个月，当前值：{pm}。",
-                        field_key="probation_months",
-                        old_value=current_state.get("probation_months"),
-                        new_value=str(pm),
-                        allowed_actions=[IssueAction.MODIFY_VALUE.value, IssueAction.IGNORE.value],
-                    )
-                )
-            elif pm > 6:
-                issues.append(
-                    _build_issue(
-                        issue_code="INVALID_PROBATION_MONTHS",
-                        severity=IssueSeverity.BLOCKER,
-                        title="试用期月份数超过最大限制",
-                        message=f"试用期 {pm} 个月超过最大允许值 6 个月，请确认。",
-                        field_key="probation_months",
-                        old_value=current_state.get("probation_months"),
-                        new_value=str(pm),
-                        allowed_actions=[IssueAction.MODIFY_VALUE.value, IssueAction.IGNORE.value],
-                    )
-                )
-        except (ValueError, TypeError):
-            issues.append(
-                _build_issue(
-                    issue_code="INVALID_PROBATION_MONTHS",
-                    severity=IssueSeverity.BLOCKER,
-                    title="试用期月份数无效",
-                    message=f"试用期月份数「{raw_pm}」无法解析为整数。",
-                    field_key="probation_months",
-                    old_value=current_state.get("probation_months"),
-                    new_value=_serialize_value(raw_pm),
-                    allowed_actions=[IssueAction.MODIFY_VALUE.value, IssueAction.IGNORE.value],
-                )
-            )
-
-    # ── 必填字段校验（WARNING，非 BLOCKER）──
-    # 入职日期缺失创建 WARNING，不阻断
-    hire_date = new_data.get("hire_date")
-    if hire_date is None or (isinstance(hire_date, str) and not hire_date.strip()):
-        # NEW 行缺少入职日期：WARNING（仍允许创建员工档案）
-        # UPDATE 行缺少入职日期：不覆盖系统值
-        issues.append(
-            _build_issue(
-                issue_code="MISSING_REQUIRED_FIELD",
-                severity=IssueSeverity.WARNING,
-                title="缺少入职日期",
-                message="入职日期为空。新员工仍会创建员工档案，"
-                "但不会创建任职记录。请导入后补充入职日期。",
-                field_key="hire_date",
-                allowed_actions=[IssueAction.SKIP_ROW.value, IssueAction.MODIFY_VALUE.value, IssueAction.IGNORE.value],
-            )
-        )
-
-    # ── 转正日期缺失提醒（WARNING）──
-    emp_type = new_data.get("employment_type") or current_state.get(
-        "employment_type"
-    )
-    if emp_type and _is_formal_employment(emp_type):
-        reg_date = new_data.get("regularization_date") or current_state.get(
-            "regularization_date"
-        )
-        if not reg_date:
-            issues.append(
-                _build_issue(
-                    issue_code="MISSING_REGULARIZATION_DATE",
-                    severity=IssueSeverity.WARNING,
-                    title="正式员工缺少转正日期",
-                    message="该员工用工类型为正式，但缺少转正日期。"
-                    "导入后请及时补充转正日期。",
-                    field_key="regularization_date",
-                    allowed_actions=[IssueAction.MODIFY_VALUE.value, IssueAction.IGNORE.value],
-                )
-            )
-
-    # ── 年龄与出生日期交叉校验（WARNING）──
-    birth_date_raw = new_data.get("birth_date") or current_state.get("birth_date")
-    age_raw = new_data.get("age")
-    if birth_date_raw and age_raw is not None:
-        try:
-            bd = _parse_date(birth_date_raw)
-            declared_age = int(age_raw)
-            if bd is not None:
-                today = date.today()
-                computed_age = (
-                    today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
-                )
-                if abs(computed_age - declared_age) > 1:
-                    issues.append(
-                        _build_issue(
-                            issue_code="AGE_MISMATCH",
-                            severity=IssueSeverity.WARNING,
-                            title="年龄与出生日期不符",
-                            message=f"根据出生日期计算年龄约 {computed_age} 岁，"
-                            f"但申报年龄为 {declared_age} 岁，请核实。",
-                            field_key="birth_date",
-                            old_value=current_state.get("birth_date"),
-                            new_value=_serialize_value(birth_date_raw),
-                            allowed_actions=[IssueAction.MODIFY_VALUE.value, IssueAction.IGNORE.value],
-                        )
-                    )
-        except (ValueError, TypeError):
-            pass
-
-    # ── 工龄校验（WARNING）──
-    hire_date_raw = new_data.get("hire_date") or current_state.get("hire_date")
-    work_age_raw = new_data.get("work_age")
-    if hire_date_raw and work_age_raw is not None:
-        try:
-            hd = _parse_date(hire_date_raw)
-            declared_work_age = float(work_age_raw)
-            if hd is not None:
-                today = date.today()
-                computed_years = (today - hd).days / 365.25
-                if computed_years < declared_work_age - 1:
-                    issues.append(
-                        _build_issue(
-                            issue_code="WORK_AGE_MISMATCH",
-                            severity=IssueSeverity.WARNING,
-                            title="工龄与入职日期不符",
-                            message=f"根据入职日期计算的在职年限约 {computed_years:.1f} 年，"
-                            f"但申报工龄为 {declared_work_age} 年。"
-                            f"如包含外部工龄，请忽略此警告。",
-                            field_key="hire_date",
-                            old_value=current_state.get("hire_date"),
-                            new_value=_serialize_value(hire_date_raw),
-                            allowed_actions=[IssueAction.MODIFY_VALUE.value, IssueAction.IGNORE.value],
-                        )
-                    )
-        except (ValueError, TypeError):
-            pass
-
     # ── 薪酬文本解析警告（WARNING）──
-    salary_text = new_data.get("raw_salary_text")
-    if salary_text and isinstance(salary_text, str) and salary_text.strip():
-        if not _looks_like_parsed_salary(salary_text):
-            issues.append(
-                _build_issue(
-                    issue_code="SALARY_UNPARSABLE",
-                    severity=IssueSeverity.WARNING,
-                    title="薪酬文本可能无法自动解析",
-                    message=f"薪酬文本「{salary_text[:100]}」格式不标准，"
-                    f"系统可能无法完全自动解析。",
-                    field_key="raw_salary_text",
-                    new_value=salary_text[:200],
-                    allowed_actions=[IssueAction.IGNORE.value, IssueAction.MODIFY_VALUE.value],
-                )
-            )
+    _add_salary_issues(new_data, issues)
 
     benefit_parse_status = new_data.get("benefit_parse_status")
     if benefit_parse_status == "UNRECOGNIZED":
@@ -875,25 +897,12 @@ def _generate_issues(
                 field_key="benefit_raw_text",
                 old_value=current_state.get("benefit_raw_text"),
                 new_value=new_data.get("benefit_raw_text"),
-                allowed_actions=["correct_manually", "ignore"],
+                allowed_actions=["IGNORE", "MODIFY_VALUE"],
             )
         )
 
     # ── PDP 测评内容可疑（WARNING）──
-    pdp_text = new_data.get("pdp_result") or new_data.get("assessment_result")
-    if pdp_text and isinstance(pdp_text, str) and pdp_text.strip():
-        if _looks_suspicious_pdp(pdp_text):
-            issues.append(
-                _build_issue(
-                    issue_code="PDP_CONTENT_SUSPICIOUS",
-                    severity=IssueSeverity.WARNING,
-                    title="PDP 测评内容疑似异常",
-                    message=f"PDP 测评文本「{pdp_text[:100]}」看起来不符合预期的测评报告格式。",
-                    field_key="pdp_result",
-                    new_value=pdp_text[:200],
-                    allowed_actions=[IssueAction.IGNORE.value, IssueAction.MODIFY_VALUE.value],
-                )
-            )
+    _add_pdp_issues(new_data, issues)
 
     return issues
 
@@ -1001,6 +1010,8 @@ def _accumulate_summary(
             summary["blocker_count"] = summary.get("blocker_count", 0) + 1
         elif sev == IssueSeverity.WARNING.value:
             summary["warning_count"] = summary.get("warning_count", 0) + 1
+        elif sev == IssueSeverity.INFO.value:
+            summary["info_count"] = summary.get("info_count", 0) + 1
 
 
 def _update_batch_summary(batch: RosterImportBatch, summary: dict) -> None:

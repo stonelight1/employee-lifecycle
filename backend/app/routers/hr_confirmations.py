@@ -36,16 +36,22 @@ router = APIRouter(tags=["HR确认"])
 def list_hr_confirmations_route(
     status: str | None = Query(default=None, description="状态过滤"),
     employee_id: int | None = Query(default=None, description="员工 ID"),
+    import_batch_id: int | None = Query(default=None, description="导入批次 ID"),
+    import_row_id: int | None = Query(default=None, description="导入行 ID"),
+    issue_code: str | None = Query(default=None, description="问题代码过滤"),
     page: int = Query(default=1, ge=1, description="页码"),
     page_size: int = Query(default=20, ge=1, le=100, description="每页数量"),
     db: DBSession = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
     """获取 HR 待确认事项列表。"""
-    items, total = list_confirmation_items(
+    items, total, pending_count = list_confirmation_items(
         db,
         status=status,
         employee_id=employee_id,
+        import_batch_id=import_batch_id,
+        import_row_id=import_row_id,
+        issue_code=issue_code,
         page=page,
         page_size=page_size,
     )
@@ -109,7 +115,7 @@ def confirm_hr_confirmation_route(
     current_user: dict = Depends(get_current_user),
 ):
     """确认处理。"""
-    result = confirm_item(db, item_id, body.note, current_user)
+    result = confirm_item(db, item_id, current_user, note=body.note, action_data=body.action_data)
     create_log(
         db,
         operator_id=current_user.get("user_id", "system"),
@@ -138,7 +144,7 @@ def reject_hr_confirmation_route(
     current_user: dict = Depends(get_current_user),
 ):
     """驳回处理。"""
-    result = reject_item(db, item_id, body.note, current_user)
+    result = reject_item(db, item_id, current_user, note=body.note)
     create_log(
         db,
         operator_id=current_user.get("user_id", "system"),
@@ -167,7 +173,7 @@ def ignore_hr_confirmation_route(
     current_user: dict = Depends(get_current_user),
 ):
     """忽略处理。"""
-    result = ignore_item(db, item_id, body.note, current_user)
+    result = ignore_item(db, item_id, current_user, note=body.note)
     create_log(
         db,
         operator_id=current_user.get("user_id", "system"),

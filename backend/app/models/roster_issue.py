@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 import sqlalchemy as sa
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..enums import IssueSeverity, ResolutionStatus
 from .base import Base
@@ -42,6 +42,11 @@ class RosterImportIssue(Base):
     )
     updated_at: Mapped[Optional[sa.DateTime]] = mapped_column(
         sa.DateTime, default=None, onupdate=sa.func.now()
+    )
+
+    # 关系
+    row: Mapped[Optional["RosterImportRow"]] = relationship(
+        "RosterImportRow", lazy="joined"
     )
 
     __table_args__ = (

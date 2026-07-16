@@ -1,17 +1,20 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { listConfirmations, confirmItem, rejectItem, ignoreItem } from '@/services/hrConfirmationService'
 import type { ConfirmationItem } from '@/types/hr-confirmation'
 import { formatDate } from '@/utils/date'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
+import BaseButton from '@/components/base/BaseButton.vue'
 import BaseBadge from '@/components/base/BaseBadge.vue'
 import BaseEmpty from '@/components/base/BaseEmpty.vue'
 import BaseSkeleton from '@/components/base/BaseSkeleton.vue'
+import BaseModal from '@/components/base/BaseModal.vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
-import { Check, X, EyeOff, AlertCircle, CreditCard, User } from 'lucide-vue-next'
+import { Check, X, EyeOff, AlertCircle, CreditCard, User, Calendar } from 'lucide-vue-next'
 
+const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
 const { show: showConfirm, options: confirmOpts, confirm, handleConfirm, handleCancel } = useConfirm()
@@ -24,13 +27,25 @@ const page = ref(1)
 const pageSize = 20
 const activeFilter = ref<string>('')
 
-interface ConfirmMeta {
-  itemId: number
-  action: 'confirm' | 'reject' | 'ignore'
-  title?: string
+// 需要填写数据的确认事项类型
+const DATA_REQUIRING_ISSUE_CODES: Record<string, { fields: Array<{ key: string; label: string; type: string }> }> = {
+  MISSING_HIRE_DATE: {
+    fields: [
+      { key: 'hire_date', label: '实际入职日期', type: 'date' },
+    ],
+  },
+  MISSING_REGULARIZATION_DATE: {
+    fields: [
+      { key: 'actual_regularization_date', label: '实际转正日期', type: 'date' },
+    ],
+  },
 }
 
-const confirmMeta = ref<ConfirmMeta | null>(null)
+// 当前确认操作的状态
+const currentActionItem = ref<ConfirmationItem | null>(null)
+const actionData = ref<Record<string, string>>({})
+const actionSubmitting = ref(false)
+const showActionForm = ref(false)
 
 const statusMap: Record<string, { label: string; color: string }> = {
   PENDING: { label: '待确认', color: 'warning' },
@@ -39,11 +54,23 @@ const statusMap: Record<string, { label: string; color: string }> = {
   IGNORED: { label: '已忽略', color: 'default' },
 }
 
+function isDataRequired(code: string): boolean {
+  return code in DATA_REQUIRING_ISSUE_CODES
+}
+
+function getRequiredFields(code: string): Array<{ key: string; label: string; type: string }> {
+  return DATA_REQUIRING_ISSUE_CODES[code]?.fields || []
+}
+
 async function loadData() {
   loading.value = true
   try {
     const params: Record<string, any> = { page: page.value, page_size: pageSize }
     if (activeFilter.value) params.status = activeFilter.value
+    // 支持路由传入的筛选
+    if (route.query.batch_id) params.import_batch_id = Number(route.query.batch_id)
+    if (route.query.import_row_id) params.import_row_id = Number(route.query.import_row_id)
+    if (route.query.issue_code) params.issue_code = route.query.issue_code
     const result = await listConfirmations(params)
     items.value = result.items
     total.value = result.total
@@ -55,18 +82,48 @@ async function loadData() {
   }
 }
 
-function doConfirm(item: ConfirmationItem) {
-  confirmMeta.value = { itemId: item.id, action: 'confirm', title: item.title }
+// 打开确认表单（对需要填写数据的类型，显示表单）
+function openConfirmForm(item: ConfirmationItem) {
+  currentActionItem.value = item
+  if (isDataRequired(item.issue_code)) {
+    actionData.value = {}
+    showActionForm.value = true
+  } else {
+    // 不需要数据，直接确认
+    doSimpleConfirm(item)
+  }
+}
+
+function closeActionForm() {
+  showActionForm.value = false
+  currentActionItem.value = null
+  actionData.value = {}
+}
+
+async function submitActionForm() {
+  if (!currentActionItem.value) return
+  actionSubmitting.value = true
+  try {
+    await confirmItem(currentActionItem.value.id, undefined, actionData.value)
+    showToast({ message: '已确认', type: 'success' })
+    closeActionForm()
+    await loadData()
+  } catch (e: any) {
+    showToast({ message: '确认失败: ' + (e.message || '未知错误'), type: 'error' })
+  } finally {
+    actionSubmitting.value = false
+  }
+}
+
+function doSimpleConfirm(item: ConfirmationItem) {
   confirm({
     title: '确认操作',
     message: `确认「${item.title}」？确认后将执行对应的业务操作。`,
     confirmText: '确认',
     onConfirm: async () => {
       try {
-        if (!confirmMeta.value) return
-        await confirmItem(confirmMeta.value.itemId)
+        await confirmItem(item.id)
         showToast({ message: '已确认', type: 'success' })
-        confirmMeta.value = null
         await loadData()
       } catch (e: any) {
         showToast({ message: '确认失败: ' + (e.message || '未知错误'), type: 'error' })
@@ -76,7 +133,6 @@ function doConfirm(item: ConfirmationItem) {
 }
 
 function doReject(item: ConfirmationItem) {
-  confirmMeta.value = { itemId: item.id, action: 'reject', title: item.title }
   confirm({
     title: '拒绝操作',
     message: `拒绝「${item.title}」？拒绝后不会修改业务数据。`,
@@ -84,10 +140,8 @@ function doReject(item: ConfirmationItem) {
     danger: true,
     onConfirm: async () => {
       try {
-        if (!confirmMeta.value) return
-        await rejectItem(confirmMeta.value.itemId)
+        await rejectItem(item.id)
         showToast({ message: '已拒绝', type: 'success' })
-        confirmMeta.value = null
         await loadData()
       } catch (e: any) {
         showToast({ message: '操作失败: ' + (e.message || '未知错误'), type: 'error' })
@@ -97,17 +151,14 @@ function doReject(item: ConfirmationItem) {
 }
 
 function doIgnore(item: ConfirmationItem) {
-  confirmMeta.value = { itemId: item.id, action: 'ignore', title: item.title }
   confirm({
     title: '忽略操作',
     message: `忽略「${item.title}」？忽略后提醒消失，不修改业务数据。`,
     confirmText: '忽略',
     onConfirm: async () => {
       try {
-        if (!confirmMeta.value) return
-        await ignoreItem(confirmMeta.value.itemId)
+        await ignoreItem(item.id)
         showToast({ message: '已忽略', type: 'success' })
-        confirmMeta.value = null
         await loadData()
       } catch (e: any) {
         showToast({ message: '操作失败: ' + (e.message || '未知错误'), type: 'error' })
@@ -177,7 +228,7 @@ onMounted(loadData)
             </div>
           </div>
           <div v-if="item.item_status === 'PENDING'" class="card-actions">
-            <button class="action-btn action-confirm" @click="doConfirm(item)">
+            <button class="action-btn action-confirm" @click="openConfirmForm(item)">
               <Check :size="16" /> 确认
             </button>
             <button class="action-btn action-reject" @click="doReject(item)">
@@ -194,6 +245,37 @@ onMounted(loadData)
     <!-- Confirm Modal -->
     <BaseModal v-if="showConfirm" :title="confirmOpts.title || '确认'" @confirm="handleConfirm" @cancel="handleCancel">
       <p>{{ confirmOpts.message }}</p>
+    </BaseModal>
+
+    <!-- Action Form Modal (for issues that need data input) -->
+    <BaseModal
+      v-if="showActionForm && currentActionItem"
+      :show="showActionForm"
+      :title="'填写信息 - ' + (currentActionItem.title || '')"
+      @confirm="submitActionForm"
+      @cancel="closeActionForm"
+    >
+      <template #message>
+        <div class="action-form">
+          <p class="form-desc">{{ currentActionItem.description }}</p>
+          <div v-for="field in getRequiredFields(currentActionItem.issue_code)" :key="field.key" class="form-field">
+            <label :for="'field-' + field.key">{{ field.label }}</label>
+            <input
+              :id="'field-' + field.key"
+              v-model="actionData[field.key]"
+              :type="field.type"
+              class="form-input"
+              :required="true"
+            />
+          </div>
+        </div>
+      </template>
+      <template #actions>
+        <BaseButton variant="secondary" @click="closeActionForm">取消</BaseButton>
+        <BaseButton variant="primary" :loading="actionSubmitting" @click="submitActionForm">
+          <Check :size="16" /> 确认
+        </BaseButton>
+      </template>
     </BaseModal>
   </div>
 </template>
@@ -339,5 +421,38 @@ onMounted(loadData)
 }
 .action-ignore {
   color: var(--color-text-tertiary);
+}
+/* Action form modal styles */
+.action-form {
+  padding: 8px 0;
+}
+.form-desc {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  margin-bottom: 16px;
+}
+.form-field {
+  margin-bottom: 14px;
+}
+.form-field label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  margin-bottom: 4px;
+}
+.form-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 14px;
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+}
+.form-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.15);
 }
 </style>
