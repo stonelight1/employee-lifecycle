@@ -1,6 +1,6 @@
 # 08 部署与环境配置
 
-> 版本：v0.4.0  
+> 版本：v0.4.2  
 > 最后更新：2026-07-16
 
 ## 1. 已确认技术栈
@@ -192,9 +192,11 @@ npm run build
 
 ```bash
 cd backend
+uv sync --extra dev
 uv run pytest
 
 cd ../frontend
+npm install
 npm run test
 ```
 

@@ -2,10 +2,11 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { get, del } from '@/api'
-import { formatDate, formatTenure, calculateProbationProgress } from '@/utils/date'
+import { formatDate, formatTenure } from '@/utils/date'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
-import BaseBadge from '@/components/base/BaseBadge.vue'
+import { resolveLifecycleStage, lifecycleStageInfo } from '@/utils/lifecycle'
+import BaseModal from '@/components/base/BaseModal.vue'
 import LifecycleBadge from '@/components/business/LifecycleBadge.vue'
 import RiskBadge from '@/components/business/RiskBadge.vue'
 import ProbationProgress from '@/components/business/ProbationProgress.vue'
@@ -13,48 +14,62 @@ import EmployeeAvatar from '@/components/business/EmployeeAvatar.vue'
 import EmployeeQuickDrawer from '@/components/business/EmployeeQuickDrawer.vue'
 import BaseEmpty from '@/components/base/BaseEmpty.vue'
 
-interface EmployeeRow {
-  id: number
-  name: string
-  employee_no?: string
-  mobile?: string
-  department?: string
-  position?: string
-  hire_date?: string
-  employment_status?: string
-  employee_status: string
-  probation_end_date?: string
-  next_action?: string
-  employment_id?: number
-  created_at: string
-}
-
 const router = useRouter()
 const route = useRoute()
 const { showToast } = useToast()
 const { show: showConfirm, options: confirmOpts, confirm, handleConfirm, handleCancel } = useConfirm()
 
-const employees = ref<EmployeeRow[]>([])
+const employees = ref<any[]>([])
 const total = ref(0)
 const loading = ref(false)
 const page = ref(1)
 const pageSize = 20
-const searchName = ref('')
+const searchKeyword = ref('')
 const filterStage = ref('')
 const filterRisk = ref('')
 const selectedEmployeeId = ref(0)
 const showDrawer = ref(false)
 
-// Parse URL params on mount
+// 搜索防抖
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+
+// 从 URL 参数初始化
 onMounted(() => {
-  const stage = route.query.stage as string
+  const keyword = route.query.keyword as string
+  const stage = route.query.lifecycle_stage as string
+  const risk = route.query.risk_level as string
+
+  if (keyword) searchKeyword.value = keyword
   if (stage) filterStage.value = stage
+  if (risk) filterRisk.value = risk
+
   loadEmployees()
 })
+
+// 同步 URL 参数
+function syncUrlParams() {
+  const query: Record<string, string> = {}
+  if (searchKeyword.value) query.keyword = searchKeyword.value
+  if (filterStage.value) query.lifecycle_stage = filterStage.value
+  if (filterRisk.value) query.risk_level = filterRisk.value
+
+  router.replace({ query })
+}
+
+// 防抖搜索
+function onSearchInput() {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    page.value = 1
+    syncUrlParams()
+    loadEmployees()
+  }, 300)
+}
 
 // Watch filter changes
 watch([filterStage, filterRisk], () => {
   page.value = 1
+  syncUrlParams()
   loadEmployees()
 })
 
@@ -64,39 +79,26 @@ async function loadEmployees() {
     const params: Record<string, any> = {
       page: page.value,
       page_size: pageSize,
+      include_employment: true,
     }
-    if (searchName.value) params.name = searchName.value
+    if (searchKeyword.value) params.keyword = searchKeyword.value
+    if (filterStage.value) params.lifecycle_stage = filterStage.value
+    if (filterRisk.value) params.risk_level = filterRisk.value
 
-    const res = await get<{ items: any[]; total: number }>('/employees', params)
+    const res = await get<{ items: any[]; total: number; page: number; page_size: number }>('/employees', params)
     if (res.success && res.data) {
-      // Enrich with employment data
-      const rows: EmployeeRow[] = []
-      for (const emp of res.data.items) {
-        const row: EmployeeRow = {
-          id: emp.id,
-          name: emp.name,
-          employee_no: emp.employee_no,
-          mobile: emp.mobile,
-          employee_status: emp.employee_status,
-          created_at: emp.created_at,
-        }
-
-        try {
-          const empListRes = await get<{ items: any[] }>(`/employees/${emp.id}/employments`)
-          const employment = empListRes.data?.items?.[0]
-          if (employment) {
-            row.department = employment.department
-            row.position = employment.position
-            row.hire_date = employment.hire_date
-            row.employment_status = employment.employment_status
-            row.probation_end_date = employment.probation_end_date
-            row.employment_id = employment.id
-          }
-        } catch {}
-
-        rows.push(row)
-      }
-      employees.value = rows
+      employees.value = (res.data.items || []).map(emp => ({
+        id: emp.id,
+        name: emp.name,
+        employee_no: emp.employee_no,
+        mobile: emp.mobile,
+        employee_status: emp.employee_status,
+        created_at: emp.created_at,
+        current_employment: emp.current_employment,
+        lifecycle_stage: emp.lifecycle_stage || resolveLifecycleStage(emp.current_employment, emp.employee_status),
+        risk_level: emp.risk_level || 'NONE',
+        next_action: emp.next_action,
+      }))
       total.value = res.data.total
     }
   } catch (e: any) {
@@ -106,16 +108,16 @@ async function loadEmployees() {
   }
 }
 
-function handleRowClick(emp: EmployeeRow) {
+function handleRowClick(emp: any) {
   selectedEmployeeId.value = emp.id
   showDrawer.value = true
 }
 
-function goToDetail(emp: EmployeeRow) {
+function goToDetail(emp: any) {
   router.push(`/employees/${emp.id}`)
 }
 
-function confirmDelete(emp: EmployeeRow) {
+function confirmDelete(emp: any) {
   confirm({
     title: '确认删除员工',
     message: `确定要删除员工「${emp.name}」吗？此操作不可恢复。`,
@@ -167,10 +169,10 @@ const stageFilters = [
       </div>
       <div class="filter-actions">
         <input
-          v-model="searchName"
+          v-model="searchKeyword"
           class="search-input"
-          placeholder="搜索姓名、手机号"
-          @input="loadEmployees()"
+          placeholder="搜索姓名、编号、手机号"
+          @input="onSearchInput"
         />
       </div>
     </div>
@@ -186,6 +188,7 @@ const stageFilters = [
             <th>生命周期</th>
             <th>试用期</th>
             <th>风险</th>
+            <th>接下来</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -199,25 +202,29 @@ const stageFilters = [
               </div>
             </td>
             <td class="td-dept">
-              <div class="dept-text">{{ emp.department || '—' }}</div>
-              <div class="pos-text">{{ emp.position || '—' }}</div>
+              <div class="dept-text">{{ emp.current_employment?.department || '—' }}</div>
+              <div class="pos-text">{{ emp.current_employment?.position || '—' }}</div>
             </td>
             <td class="td-hire">
-              <div>{{ formatDate(emp.hire_date) }}</div>
-              <div class="text-xs text-tertiary">{{ formatTenure(emp.hire_date) }}</div>
+              <div>{{ formatDate(emp.current_employment?.hire_date) }}</div>
+              <div class="text-xs text-tertiary">{{ formatTenure(emp.current_employment?.hire_date) }}</div>
             </td>
             <td>
-              <LifecycleBadge :status="emp.employment_status || emp.employee_status" size="sm" />
+              <LifecycleBadge :status="emp.lifecycle_stage" size="sm" />
             </td>
             <td class="td-probation">
               <ProbationProgress
-                :hire-date="emp.hire_date"
-                :probation-end-date="emp.probation_end_date"
+                :hire-date="emp.current_employment?.hire_date"
+                :probation-end-date="emp.current_employment?.probation_end_date"
                 size="sm"
               />
             </td>
             <td>
-              <RiskBadge level="NONE" size="sm" />
+              <RiskBadge :level="emp.risk_level" size="sm" />
+            </td>
+            <td class="td-next">
+              <span v-if="emp.next_action" class="next-text">{{ emp.next_action.title }}</span>
+              <span v-else class="text-tertiary">—</span>
             </td>
             <td class="td-actions" @click.stop>
               <button class="action-link" @click="goToDetail(emp)">查看</button>
@@ -259,11 +266,6 @@ const stageFilters = [
     />
   </div>
 </template>
-
-<script lang="ts">
-import BaseModal from '@/components/base/BaseModal.vue'
-export default {}
-</script>
 
 <style scoped>
 .page-intro {
@@ -366,7 +368,14 @@ th {
   color: var(--color-text-tertiary);
 }
 .td-probation {
-  min-width: 140px;
+  min-width: 120px;
+}
+.td-next {
+  max-width: 150px;
+}
+.next-text {
+  font-size: var(--font-size-xs);
+  color: var(--color-primary);
 }
 .td-actions {
   white-space: nowrap;

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { fetchDashboard, type DashboardData } from '@/services/dashboardService'
+import { fetchDashboard } from '@/services/dashboardService'
+import type { DashboardOverview } from '@/types/dashboard'
 import { lifecycleStageMap, getStatusLabel } from '@/constants/status'
 import { formatDate } from '@/utils/date'
 import BaseSkeleton from '@/components/base/BaseSkeleton.vue'
@@ -9,17 +10,18 @@ import BaseEmpty from '@/components/base/BaseEmpty.vue'
 import RiskBadge from '@/components/business/RiskBadge.vue'
 
 const router = useRouter()
-const data = ref<DashboardData | null>(null)
+const data = ref<DashboardOverview | null>(null)
 const loading = ref(true)
 const error = ref(false)
-const apiConnected = ref(true)
+const backendStatus = ref<'connected' | 'disconnected' | 'error'>('connected')
+const errorMessage = ref('')
 
 const isEmpty = computed(() => {
   if (!data.value) return true
   return (
-    data.value.metrics.active_employee_count === 0 &&
-    data.value.metrics.probation_employee_count === 0 &&
-    data.value.metrics.overdue_work_item_count === 0
+    (data.value.metrics?.active_employee_count ?? 0) === 0 &&
+    (data.value.metrics?.probation_employee_count ?? 0) === 0 &&
+    (data.value.metrics?.overdue_work_item_count ?? 0) === 0
   )
 })
 
@@ -45,12 +47,20 @@ const welcomeText = computed(() => {
 async function loadDashboard() {
   loading.value = true
   error.value = false
+  backendStatus.value = 'connected'
+  errorMessage.value = ''
   try {
     data.value = await fetchDashboard()
-    apiConnected.value = true
+    backendStatus.value = 'connected'
   } catch (e: any) {
     console.error('加载工作台失败:', e)
-    apiConnected.value = false
+    if (e.message?.includes('后端连接失败')) {
+      backendStatus.value = 'disconnected'
+      errorMessage.value = '后端 API 连接失败，请确认服务已启动'
+    } else {
+      backendStatus.value = 'error'
+      errorMessage.value = e.message || '未知错误'
+    }
     error.value = true
   } finally {
     loading.value = false
@@ -58,8 +68,9 @@ async function loadDashboard() {
 }
 
 function goToEmployees(stage?: string) {
-  const query = stage ? `?stage=${stage}` : ''
-  router.push(`/employees${query}`)
+  const query: Record<string, string> = {}
+  if (stage) query.lifecycle_stage = stage
+  router.push({ path: '/employees', query })
 }
 
 function goToWorkItems() {
@@ -84,10 +95,10 @@ onMounted(loadDashboard)
     </div>
 
     <!-- 后端未连接 -->
-    <div v-else-if="!apiConnected" class="welcome-section">
+    <div v-else-if="backendStatus === 'disconnected'" class="welcome-section">
       <div class="welcome-content">
         <h1 class="welcome-title">未能连接到后端服务</h1>
-        <p class="welcome-subtitle">请确认后端 API 服务已启动 (端口 8013)</p>
+        <p class="welcome-subtitle">{{ errorMessage }}</p>
         <div class="welcome-actions">
           <button class="action-btn primary" @click="loadDashboard">重新连接</button>
           <button class="action-btn secondary" @click="router.push('/employees')">前往员工中心</button>
@@ -95,7 +106,18 @@ onMounted(loadDashboard)
       </div>
     </div>
 
-    <!-- 欢迎区（有数据或无数据） -->
+    <!-- 后端错误 -->
+    <div v-else-if="backendStatus === 'error' && !data" class="welcome-section">
+      <div class="welcome-content">
+        <h1 class="welcome-title">加载工作台数据时出错</h1>
+        <p class="welcome-subtitle">{{ errorMessage }}</p>
+        <div class="welcome-actions">
+          <button class="action-btn primary" @click="loadDashboard">重新加载</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 欢迎区 -->
     <div v-else-if="data" class="welcome-section">
       <div class="welcome-content">
         <h1 class="welcome-title">
@@ -123,7 +145,6 @@ onMounted(loadDashboard)
 
     <!-- 有数据时展示指标 -->
     <template v-if="data && !isEmpty">
-      <!-- 指标卡 -->
       <div class="metrics-grid">
         <div class="metric-card" @click="goToEmployees()">
           <div class="metric-info">
@@ -165,7 +186,6 @@ onMounted(loadDashboard)
 
       <!-- 两栏布局 -->
       <div class="dashboard-columns">
-        <!-- 左侧 -->
         <div class="column-left">
           <div class="section-card">
             <div class="section-card-header">
@@ -182,6 +202,9 @@ onMounted(loadDashboard)
                     <span v-if="item.overdue_days > 0" class="overdue-tag">逾期{{ item.overdue_days }}天</span>
                     <span>{{ item.title }}</span>
                   </div>
+                  <div v-if="item.employee_name" class="work-item-employee text-xs text-tertiary">
+                    {{ item.employee_name }}{{ item.department ? ' · ' + item.department : '' }}
+                  </div>
                 </div>
                 <div class="work-item-right">
                   <RiskBadge v-if="item.risk_level && item.risk_level !== 'NONE'" :level="item.risk_level" />
@@ -191,7 +214,6 @@ onMounted(loadDashboard)
           </div>
         </div>
 
-        <!-- 右侧 -->
         <div class="column-right">
           <div class="section-card">
             <div class="section-card-header">
@@ -218,7 +240,7 @@ onMounted(loadDashboard)
     </template>
 
     <!-- 空数据欢迎页 -->
-    <div v-else-if="data && isEmpty && apiConnected" class="empty-welcome">
+    <div v-else-if="data && isEmpty && backendStatus === 'connected'" class="empty-welcome">
       <div class="empty-welcome-card">
         <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" class="empty-icon">
           <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/>

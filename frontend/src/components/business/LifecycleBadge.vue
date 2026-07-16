@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { lifecycleStageMap, getStatusLabel, employeeStatusMap } from '@/constants/status'
+import { lifecycleStageInfo } from '@/utils/lifecycle'
+import { getStatusLabel, employeeStatusMap } from '@/constants/status'
 import BaseBadge from '@/components/base/BaseBadge.vue'
 
 const props = withDefaults(defineProps<{
@@ -12,7 +13,7 @@ const props = withDefaults(defineProps<{
 
 const stageInfo = computed(() => {
   if (!props.status) return null
-  return lifecycleStageMap[props.status] || null
+  return lifecycleStageInfo[props.status] || null
 })
 </script>
 

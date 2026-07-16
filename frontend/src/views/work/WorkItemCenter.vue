@@ -1,59 +1,145 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { fetchWorkItems, completeWorkItem, type WorkItem } from '@/services/workItemService'
+import {
+  fetchWorkItems,
+  completeWorkItem,
+  startFollowupTask,
+  confirmFollowupTask,
+} from '@/services/workItemService'
+import type { WorkItem } from '@/types/work-item'
 import { useToast } from '@/composables/useToast'
-import { formatDate, formatRelativeDate } from '@/utils/date'
-import BaseBadge from '@/components/base/BaseBadge.vue'
+import { formatDate } from '@/utils/date'
 import RiskBadge from '@/components/business/RiskBadge.vue'
 import BaseEmpty from '@/components/base/BaseEmpty.vue'
+import dayjs from 'dayjs'
 
 const router = useRouter()
 const { showToast } = useToast()
 const items = ref<WorkItem[]>([])
 const loading = ref(true)
+const errorMessage = ref('')
 const activeTab = ref('all')
-const completing = ref<Set<string>>(new Set())
+const actionLoading = ref<Set<string>>(new Set())
 
+/**
+ * 按 days_until_due 分组：
+ *   days_until_due < 0 → 已逾期
+ *   days_until_due === 0 → 今天
+ *   1 ≤ days_until_due ≤ 7 → 未来 7 天
+ *   days_until_due > 7 → 更晚
+ *   null → 无日期
+ */
 const groupedItems = computed(() => {
-  const overdue = items.value.filter((i) => i.overdue_days > 0 && i.status !== 'COMPLETED')
-  const today = items.value.filter((i) => i.overdue_days === 0 && i.status === 'PENDING')
-  const future = items.value.filter((i) => i.overdue_days < 0 && i.status === 'PENDING')
-  const completed = items.value.filter((i) => i.status === 'COMPLETED')
+  const overdue: WorkItem[] = []
+  const today: WorkItem[] = []
+  const future7d: WorkItem[] = []
+  const later: WorkItem[] = []
+  const noDate: WorkItem[] = []
+  const completed: WorkItem[] = []
 
-  return { overdue, today, future, completed }
+  for (const item of items.value) {
+    if (item.status === 'COMPLETED' || item.status === 'CANCELLED') {
+      completed.push(item)
+      continue
+    }
+    const d = item.days_until_due
+    if (d === null || d === undefined) {
+      noDate.push(item)
+    } else if (d < 0) {
+      overdue.push(item)
+    } else if (d === 0) {
+      today.push(item)
+    } else if (d <= 7) {
+      future7d.push(item)
+    } else {
+      later.push(item)
+    }
+  }
+
+  return { overdue, today, future7d, later, noDate, completed }
 })
 
 const counts = computed(() => ({
   all: items.value.length,
   overdue: groupedItems.value.overdue.length,
   today: groupedItems.value.today.length,
-  future: groupedItems.value.future.length,
+  future: groupedItems.value.future7d.length,
+  later: groupedItems.value.later.length,
   completed: groupedItems.value.completed.length,
 }))
 
 async function loadItems() {
   loading.value = true
+  errorMessage.value = ''
   try {
     items.value = await fetchWorkItems()
   } catch (e: any) {
     console.error('加载工作事项失败:', e)
+    errorMessage.value = e.message || '工作事项加载失败'
   } finally {
     loading.value = false
   }
 }
 
-async function handleComplete(item: WorkItem) {
-  if (completing.value.has(item.id)) return
-  completing.value.add(item.id)
+/**
+ * 根据状态处理操作按钮
+ */
+function getActionLabel(status: string): string {
+  switch (status) {
+    case 'PENDING': return '开始处理'
+    case 'IN_PROGRESS': return '提交确认'
+    case 'PENDING_CONFIRMATION': return '确认完成'
+    default: return ''
+  }
+}
+
+async function handleAction(item: WorkItem) {
+  if (actionLoading.value.has(item.id)) return
+  actionLoading.value.add(item.id)
+
   try {
-    await completeWorkItem(item)
-    showToast({ message: '事项已完成', type: 'success' })
-    items.value = items.value.filter((i) => i.id !== item.id)
+    if (item.source_type === 'TODO') {
+      // 待办：调用完成接口
+      await completeWorkItem(item)
+      showToast({ message: '待办已完成', type: 'success' })
+      items.value = items.value.filter((i) => i.id !== item.id)
+    } else {
+      // 跟进任务状态处理
+      switch (item.status) {
+        case 'PENDING': {
+          await startFollowupTask(item.source_id)
+          // 刷新任务状态
+          updateItemStatus(item.id, 'IN_PROGRESS')
+          showToast({ message: '已开始处理', type: 'success', duration: 2000 })
+          break
+        }
+        case 'IN_PROGRESS': {
+          await completeWorkItem(item) // 调用 /submit
+          updateItemStatus(item.id, 'PENDING_CONFIRMATION')
+          showToast({ message: '已提交，等待确认', type: 'success', duration: 2000 })
+          break
+        }
+        case 'PENDING_CONFIRMATION': {
+          await confirmFollowupTask(item.source_id)
+          showToast({ message: '事项已完成', type: 'success' })
+          // COMPLETED 状态的活动事项应移除
+          items.value = items.value.filter((i) => i.id !== item.id)
+          break
+        }
+      }
+    }
   } catch (e: any) {
     showToast({ message: e.message || '操作失败', type: 'error' })
   } finally {
-    completing.value.delete(item.id)
+    actionLoading.value.delete(item.id)
+  }
+}
+
+function updateItemStatus(id: string, newStatus: WorkItem['status']) {
+  const item = items.value.find((i) => i.id === id)
+  if (item) {
+    item.status = newStatus
   }
 }
 
@@ -84,6 +170,11 @@ onMounted(loadItems)
     <!-- Loading -->
     <div v-if="loading" class="loading-state text-tertiary">加载中...</div>
 
+    <div v-else-if="errorMessage" class="error-state">
+      <p>{{ errorMessage }}</p>
+      <button class="action-btn" @click="loadItems">重新加载</button>
+    </div>
+
     <!-- Empty -->
     <div v-else-if="items.length === 0">
       <BaseEmpty title="当前没有待处理事项" description="新的跟进任务和系统待办会显示在这里" action-label="查看全部员工" @action="router.push('/employees')" />
@@ -105,14 +196,20 @@ onMounted(loadItems)
                 {{ item.title }}
               </div>
               <div class="item-meta">
-                <span v-if="item.employee_name">{{ item.employee_name }}</span>
-                <span v-if="item.department"> · {{ item.department }}</span>
+                <template v-if="item.employee_name">
+                  {{ item.employee_name }}<template v-if="item.department"> · {{ item.department }}</template>
+                </template>
               </div>
             </div>
             <div class="item-actions">
               <RiskBadge v-if="item.risk_level && item.risk_level !== 'NONE'" :level="item.risk_level" size="sm" />
-              <button class="complete-btn" :disabled="completing.has(item.id)" @click="handleComplete(item)">
-                {{ completing.has(item.id) ? '...' : '完成' }}
+              <button
+                v-if="getActionLabel(item.status)"
+                class="action-btn"
+                :disabled="actionLoading.has(item.id)"
+                @click="handleAction(item)"
+              >
+                {{ actionLoading.has(item.id) ? '处理中...' : getActionLabel(item.status) }}
               </button>
             </div>
           </div>
@@ -130,38 +227,81 @@ onMounted(loadItems)
             <div class="item-main">
               <div class="item-title">{{ item.title }}</div>
               <div class="item-meta">
-                <span v-if="item.employee_name">{{ item.employee_name }}</span>
-                <span v-if="item.department"> · {{ item.department }}</span>
+                <template v-if="item.employee_name">
+                  {{ item.employee_name }}<template v-if="item.department"> · {{ item.department }}</template>
+                </template>
               </div>
             </div>
             <div class="item-actions">
-              <button class="complete-btn" :disabled="completing.has(item.id)" @click="handleComplete(item)">
-                {{ completing.has(item.id) ? '...' : '完成' }}
+              <button
+                v-if="getActionLabel(item.status)"
+                class="action-btn"
+                :disabled="actionLoading.has(item.id)"
+                @click="handleAction(item)"
+              >
+                {{ actionLoading.has(item.id) ? '处理中...' : getActionLabel(item.status) }}
               </button>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- Future -->
-      <div v-if="groupedItems.future.length > 0 && (activeTab === 'all' || activeTab === 'future')" class="work-group">
+      <!-- Future 7 days -->
+      <div v-if="groupedItems.future7d.length > 0 && (activeTab === 'all' || activeTab === 'future')" class="work-group">
         <div class="group-header">
           <span class="group-label">未来 7 天</span>
-          <span class="group-count">{{ groupedItems.future.length }}</span>
+          <span class="group-count">{{ groupedItems.future7d.length }}</span>
         </div>
         <div class="group-items">
-          <div v-for="item in groupedItems.future" :key="item.id" class="group-item">
+          <div v-for="item in groupedItems.future7d" :key="item.id" class="group-item">
             <div class="item-main">
               <div class="item-title">{{ item.title }}</div>
               <div class="item-meta">
-                <span v-if="item.employee_name">{{ item.employee_name }}</span>
-                <span v-if="item.department"> · {{ item.department }}</span>
-                <span v-if="item.due_at"> · {{ formatDate(item.due_at) }}</span>
+                <template v-if="item.employee_name">
+                  {{ item.employee_name }}<template v-if="item.department"> · {{ item.department }}</template>
+                </template>
+                <template v-if="item.due_at"> · {{ formatDate(item.due_at) }}</template>
               </div>
             </div>
             <div class="item-actions">
-              <button class="complete-btn" :disabled="completing.has(item.id)" @click="handleComplete(item)">
-                {{ completing.has(item.id) ? '...' : '完成' }}
+              <button
+                v-if="getActionLabel(item.status)"
+                class="action-btn"
+                :disabled="actionLoading.has(item.id)"
+                @click="handleAction(item)"
+              >
+                {{ actionLoading.has(item.id) ? '处理中...' : getActionLabel(item.status) }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Later -->
+      <div v-if="groupedItems.later.length > 0 && (activeTab === 'all' || activeTab === 'future')" class="work-group">
+        <div class="group-header">
+          <span class="group-label">更晚</span>
+          <span class="group-count">{{ groupedItems.later.length }}</span>
+        </div>
+        <div class="group-items">
+          <div v-for="item in groupedItems.later" :key="item.id" class="group-item">
+            <div class="item-main">
+              <div class="item-title">{{ item.title }}</div>
+              <div class="item-meta">
+                <template v-if="item.employee_name">
+                  {{ item.employee_name }}<template v-if="item.department"> · {{ item.department }}</template>
+                </template>
+                <template v-if="item.due_at"> · {{ formatDate(item.due_at) }}</template>
+              </div>
+            </div>
+            <div class="item-actions">
+              <button
+                v-if="getActionLabel(item.status)"
+                class="action-btn"
+                :disabled="actionLoading.has(item.id)"
+                @click="handleAction(item)"
+              >
+                {{ actionLoading.has(item.id) ? '处理中...' : getActionLabel(item.status) }}
               </button>
             </div>
           </div>
@@ -171,7 +311,7 @@ onMounted(loadItems)
       <!-- Completed -->
       <div v-if="groupedItems.completed.length > 0 && activeTab === 'completed'" class="work-group">
         <div class="group-header">
-          <span class="group-label">已完成</span>
+          <span class="group-label">已完成 / 已取消</span>
           <span class="group-count">{{ groupedItems.completed.length }}</span>
         </div>
         <div class="group-items">
@@ -313,7 +453,7 @@ onMounted(loadItems)
   flex-shrink: 0;
   margin-left: 16px;
 }
-.complete-btn {
+.action-btn {
   padding: 4px 12px;
   border: 1px solid var(--color-primary);
   border-radius: var(--radius-sm);
@@ -322,13 +462,23 @@ onMounted(loadItems)
   font-size: var(--font-size-xs);
   font-weight: 500;
   cursor: pointer;
+  white-space: nowrap;
 }
-.complete-btn:hover {
+.action-btn:hover {
   background: var(--color-primary);
   color: #fff;
 }
-.complete-btn:disabled {
+.action-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.error-state {
+  padding: 24px;
+  text-align: center;
+  color: var(--color-danger);
+}
+.error-state .action-btn {
+  margin-top: 12px;
 }
 </style>

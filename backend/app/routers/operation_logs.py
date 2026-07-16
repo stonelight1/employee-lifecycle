@@ -30,7 +30,7 @@ def list_operation_logs_route(
     page: int = Query(default=1, ge=1, description="页码"),
     page_size: int = Query(default=20, ge=1, le=100, description="每页数量"),
     db: DBSession = Depends(get_db_session),
-    current_user: dict = Depends(get_current_operator),
+    current_user: dict = Depends(get_current_user),
 ):
     """获取操作日志列表。"""
     items, total = list_logs(
@@ -60,7 +60,7 @@ def list_operation_logs_route(
 def get_operation_log_route(
     log_id: int,
     db: DBSession = Depends(get_db_session),
-    current_user: dict = Depends(get_current_operator),
+    current_user: dict = Depends(get_current_user),
 ):
     """获取操作日志详情。"""
     result = get_log(db, log_id)

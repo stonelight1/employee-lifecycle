@@ -1,53 +1,6 @@
 import { get } from '@/api'
-
-export interface DashboardMetrics {
-  active_employee_count: number
-  probation_employee_count: number
-  regularization_due_7d_count: number
-  overdue_work_item_count: number
-}
-
-export interface LifecycleDistribution {
-  stage: string
-  count: number
-}
-
-export interface PriorityWorkItem {
-  id: string
-  employee_name: string
-  department?: string
-  position?: string
-  title: string
-  due_at?: string
-  overdue_days: number
-  risk_level?: string
-  source_type: string
-  source_id: number
-}
-
-export interface UpcomingEvent {
-  date: string
-  title: string
-  employee_name?: string
-  type: string
-}
-
-export interface RiskEmployee {
-  name: string
-  department?: string
-  position?: string
-  risk_level: string
-  risk_reason?: string
-  last_communication_date?: string
-}
-
-export interface DashboardData {
-  metrics: DashboardMetrics
-  lifecycle_distribution: LifecycleDistribution[]
-  priority_work_items: PriorityWorkItem[]
-  upcoming_events: UpcomingEvent[]
-  risk_employees: RiskEmployee[]
-}
+import type { DashboardOverview } from '@/types/dashboard'
+import type { ApiResponse, PaginatedData } from '@/types/common'
 
 /**
  * 检查 API 连接是否正常
@@ -61,8 +14,10 @@ async function checkApiConnection(): Promise<boolean> {
   }
 }
 
-export async function fetchDashboard(): Promise<DashboardData> {
-  // 如果后端不运行，直接返回空数据，不崩溃
+/**
+ * 获取工作台概览（优先使用后端聚合接口，失败时降级本地聚合）
+ */
+export async function fetchDashboard(): Promise<DashboardOverview> {
   const connected = await checkApiConnection()
   if (!connected) {
     console.warn('[Dashboard] 后端 API 未连接，返回空数据')
@@ -71,22 +26,21 @@ export async function fetchDashboard(): Promise<DashboardData> {
 
   // 尝试后端聚合接口
   try {
-    const res = await get<DashboardData>('/dashboard/overview')
+    const res = await get<DashboardOverview>('/dashboard/overview')
     if (res.success && res.data) return res.data
-  } catch {
-    // 后端无聚合接口，走客户端聚合
-  }
-
-  // 客户端聚合（N+1 查询）
-  try {
-    return await aggregateFromClient()
-  } catch (e) {
-    console.warn('[Dashboard] 客户端聚合失败:', e)
-    return createEmptyDashboardData()
+    throw new Error('工作台聚合接口响应结构错误')
+  } catch (e: any) {
+    // 聚合接口 404 时使用旧接口降级
+    if (e?.status === 404 || e?.response?.status === 404) {
+      console.warn('dashboard aggregate endpoint unavailable, fallback enabled')
+      return await aggregateFromClient()
+    }
+    // 非 404 错误（500/超时/网络错误）抛出明确错误
+    throw e
   }
 }
 
-async function aggregateFromClient(): Promise<DashboardData> {
+async function aggregateFromClient(): Promise<DashboardOverview> {
   const [empRes, taskRes, todoRes] = await Promise.all([
     get<{ items: any[]; total: number }>('/employees', { page: 1, page_size: 200 }),
     get<{ items: any[]; total: number }>('/followup-tasks', { page: 1, page_size: 200 }),
@@ -97,13 +51,13 @@ async function aggregateFromClient(): Promise<DashboardData> {
   const tasks = taskRes.data?.items || []
   const todos = todoRes.data?.items || []
 
-  // 获取每个员工的当前任职信息
+  // 获取每个员工的当前任职信息（降级模式下 N+1 不可避免）
   const currentEmployments: any[] = []
   await Promise.all(
     employees.map(async (employee: any) => {
       try {
-        const res = await get<{ items: any[]; total: number }>(`/employees/${employee.id}/employments`)
-        const items = res.data?.items || []
+        const { data: res } = await get<{ items: any[] }>(`/employees/${employee.id}/employments`)
+        const items = res?.items || []
         const current = items.find(
           (item: any) => ['PENDING', 'ACTIVE', 'SEPARATING'].includes(item.employment_status),
         ) || items[0]
@@ -120,7 +74,6 @@ async function aggregateFromClient(): Promise<DashboardData> {
     }),
   )
 
-  // 统计生命周期分布
   const probationCount = currentEmployments.filter((e: any) =>
     e.employment_status === 'ACTIVE' &&
     ['NOT_STARTED', 'IN_PROGRESS', 'PENDING_REVIEW'].includes(e.probation_status),
@@ -133,7 +86,6 @@ async function aggregateFromClient(): Promise<DashboardData> {
   const separatingCount = currentEmployments.filter((e: any) => e.employment_status === 'SEPARATING').length
   const separatedCount = currentEmployments.filter((e: any) => e.employment_status === 'SEPARATED').length
 
-  // 统计逾期事项
   const now = new Date()
   const overdueTasks = tasks.filter((t: any) =>
     ['PENDING', 'IN_PROGRESS'].includes(t.followup_status) &&
@@ -144,34 +96,9 @@ async function aggregateFromClient(): Promise<DashboardData> {
     t.due_at && new Date(t.due_at) < now,
   )
 
-  // 构建优先级事项
-  const priorityWorkItems: PriorityWorkItem[] = [
-    ...overdueTasks.map((t: any) => ({
-      id: `task-${t.id}`,
-      source_type: 'FOLLOWUP_TASK' as const,
-      source_id: t.id,
-      title: t.task_name,
-      due_at: t.planned_date,
-      overdue_days: Math.round((now.getTime() - new Date(t.planned_date).getTime()) / (1000 * 60 * 60 * 24)),
-      risk_level: 'NONE',
-      employee_name: '',
-    })),
-    ...overdueTodos.map((t: any) => ({
-      id: `todo-${t.id}`,
-      source_type: 'TODO' as const,
-      source_id: t.id,
-      title: t.title,
-      due_at: t.due_at,
-      overdue_days: t.due_at ? Math.round((now.getTime() - new Date(t.due_at).getTime()) / (1000 * 60 * 60 * 24)) : 0,
-      risk_level: 'NONE',
-      employee_name: '',
-    })),
-  ].slice(0, 8)
-
-  // 近期转正
-  let regularizationDue7d = 0
   const nowDate = now.toISOString().slice(0, 10)
   const nextWeek = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  let regularizationDue7d = 0
   for (const emp of currentEmployments) {
     if (emp.probation_end_date && emp.probation_end_date >= nowDate && emp.probation_end_date <= nextWeek) {
       regularizationDue7d++
@@ -191,14 +118,39 @@ async function aggregateFromClient(): Promise<DashboardData> {
       { stage: 'ACTIVE', count: activeCount },
       { stage: 'SEPARATING', count: separatingCount },
       { stage: 'SEPARATED', count: separatedCount },
-    ],
-    priority_work_items: priorityWorkItems,
+    ].filter(d => d.count > 0),
+    priority_work_items: [
+      ...overdueTasks.map((t: any) => ({
+        id: `FOLLOWUP_TASK_${t.id}`,
+        source_type: 'FOLLOWUP_TASK',
+        source_id: t.id,
+        employee_name: '',
+        department: undefined,
+        position: undefined,
+        title: t.task_name,
+        due_at: t.planned_date,
+        overdue_days: Math.max(0, Math.round((now.getTime() - new Date(t.planned_date).getTime()) / (1000 * 60 * 60 * 24))),
+        risk_level: 'NONE',
+      })),
+      ...overdueTodos.map((t: any) => ({
+        id: `TODO_${t.id}`,
+        source_type: 'TODO',
+        source_id: t.id,
+        employee_name: '',
+        department: undefined,
+        position: undefined,
+        title: t.title,
+        due_at: t.due_at,
+        overdue_days: t.due_at ? Math.max(0, Math.round((now.getTime() - new Date(t.due_at).getTime()) / (1000 * 60 * 60 * 24))) : 0,
+        risk_level: 'NONE',
+      })),
+    ].slice(0, 8),
     upcoming_events: [],
     risk_employees: [],
   }
 }
 
-function createEmptyDashboardData(): DashboardData {
+function createEmptyDashboardData(): DashboardOverview {
   return {
     metrics: {
       active_employee_count: 0,

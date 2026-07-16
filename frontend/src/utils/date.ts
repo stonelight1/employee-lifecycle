@@ -10,7 +10,9 @@ dayjs.locale('zh-cn')
  */
 export function formatDate(date?: string | Date | null): string {
   if (!date) return '—'
-  return dayjs(date).format('YYYY-MM-DD')
+  const d = dayjs(date)
+  if (!d.isValid()) return '—'
+  return d.format('YYYY-MM-DD')
 }
 
 /**
@@ -18,7 +20,9 @@ export function formatDate(date?: string | Date | null): string {
  */
 export function formatDateTime(date?: string | Date | null): string {
   if (!date) return '—'
-  return dayjs(date).format('YYYY-MM-DD HH:mm:ss')
+  const d = dayjs(date)
+  if (!d.isValid()) return '—'
+  return d.format('YYYY-MM-DD HH:mm:ss')
 }
 
 /**
@@ -27,12 +31,14 @@ export function formatDateTime(date?: string | Date | null): string {
 export function formatRelativeDate(date?: string | Date | null): string {
   if (!date) return '—'
   const d = dayjs(date)
-  const now = dayjs()
-  const diffDays = d.diff(now, 'day')
+  if (!d.isValid()) return '—'
+  const target = d.startOf('day')
+  const now = dayjs().startOf('day')
+  const diffDays = target.diff(now, 'day')
 
-  if (d.isSame(now, 'day')) return '今天'
-  if (d.isSame(now.add(1, 'day'), 'day')) return '明天'
-  if (d.isSame(now.subtract(1, 'day'), 'day')) return '昨天'
+  if (diffDays === 0) return '今天'
+  if (diffDays === 1) return '明天'
+  if (diffDays === -1) return '昨天'
 
   if (diffDays > 0) return `${diffDays} 天后`
   if (diffDays < 0) return `已逾期 ${Math.abs(diffDays)} 天`
@@ -45,9 +51,11 @@ export function formatRelativeDate(date?: string | Date | null): string {
 export function calculateOverdueDays(dueDate?: string | Date | null): number {
   if (!dueDate) return 0
   const d = dayjs(dueDate)
-  const now = dayjs()
-  if (d.isBefore(now, 'day')) {
-    return now.diff(d, 'day')
+  if (!d.isValid()) return 0
+  const due = d.startOf('day')
+  const now = dayjs().startOf('day')
+  if (due.isBefore(now, 'day')) {
+    return now.diff(due, 'day')
   }
   return 0
 }
@@ -58,6 +66,7 @@ export function calculateOverdueDays(dueDate?: string | Date | null): number {
 export function formatTenure(hireDate?: string | Date | null): string {
   if (!hireDate) return '—'
   const start = dayjs(hireDate)
+  if (!start.isValid()) return '—'
   const now = dayjs()
   const months = now.diff(start, 'month')
   const days = now.diff(start.add(months, 'month'), 'day')
@@ -75,12 +84,13 @@ export function calculateProbationProgress(
   if (!hireDate || !probationEndDate) return 0
   const start = dayjs(hireDate)
   const end = dayjs(probationEndDate)
-  const now = dayjs()
+  if (!start.isValid() || !end.isValid()) return 0
+  const now = dayjs().startOf('day')
 
-  const totalDays = end.diff(start, 'day')
+  const totalDays = end.startOf('day').diff(start.startOf('day'), 'day')
   if (totalDays <= 0) return 100
 
-  const elapsedDays = now.diff(start, 'day')
+  const elapsedDays = now.diff(start.startOf('day'), 'day')
   const progress = Math.round((elapsedDays / totalDays) * 100)
   return Math.min(100, Math.max(0, progress))
 }
@@ -100,5 +110,7 @@ export function calculateOverdueText(dueDate?: string | Date | null): string | n
  */
 export function tableDate(date?: string | Date | null): string {
   if (!date) return '—'
-  return dayjs(date).format('MM-DD')
+  const d = dayjs(date)
+  if (!d.isValid()) return '—'
+  return d.format('MM-DD')
 }

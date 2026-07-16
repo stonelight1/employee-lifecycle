@@ -1,12 +1,12 @@
-// 生命周期阶段颜色与标签
+// 生命周期阶段颜色与标签（与后端 resolve_lifecycle_stage 一致）
 export const lifecycleStageMap: Record<string, { label: string; color: string; background: string }> = {
   PENDING: { label: '待入职', color: '#7C3AED', background: '#F3E8FF' },
   PROBATION: { label: '试用期', color: '#2563EB', background: '#EFF6FF' },
   REGULARIZATION_PENDING: { label: '待转正', color: '#D97706', background: '#FFF7E8' },
   ACTIVE: { label: '正式在职', color: '#16825D', background: '#EAF8F1' },
-  CHANGING: { label: '异动中', color: '#7C3AED', background: '#F3E8FF' },
   SEPARATING: { label: '离职中', color: '#E11D48', background: '#FFF1F2' },
   SEPARATED: { label: '已离职', color: '#667085', background: '#F2F4F7' },
+  UNKNOWN: { label: '未知', color: '#98A2B3', background: '#F2F4F7' },
 }
 
 // 风险等级
@@ -17,47 +17,50 @@ export const riskMap: Record<string, { label: string; color: string; background:
   NONE: { label: '正常', color: '#027A48', background: '#ECFDF3' },
 }
 
-// 员工状态映射
-export const employeeStatusMap: Record<string, string> = {
+// 后端 EmploymentStatus 映射
+export const employmentStatusMap: Record<string, string> = {
   PENDING: '待入职',
   ACTIVE: '在职',
-  PROBATION: '试用期',
-  REGULAR: '正式员工',
   SEPARATING: '离职办理中',
   SEPARATED: '已离职',
 }
 
-// 任职状态映射
-export const employmentStatusMap: Record<string, string> = {
-  PENDING: '待入职',
+// 后端 EmployeeStatus 映射
+export const employeeStatusMap: Record<string, string> = {
   ACTIVE: '在职',
-  PROBATION: '试用期',
-  REGULAR: '正式员工',
-  SEPARATING: '离职办理中',
-  SEPARATED: '已离职',
+  ARCHIVED: '已归档',
+}
+
+// 后端 ProbationStatus 映射
+export const probationStatusMap: Record<string, string> = {
+  NOT_STARTED: '未开始',
+  IN_PROGRESS: '进行中',
+  PENDING_REVIEW: '待转正',
+  REGULARIZED: '已转正',
+  FAILED: '未通过',
+  TERMINATED: '已终止',
 }
 
 // 跟进任务状态映射
 export const followupStatusMap: Record<string, string> = {
   PENDING: '待处理',
   IN_PROGRESS: '处理中',
+  PENDING_CONFIRMATION: '待确认',
   COMPLETED: '已完成',
   CANCELLED: '已取消',
-  OVERDUE: '已逾期',
 }
 
 // 待办状态映射
 export const todoStatusMap: Record<string, string> = {
   PENDING: '待处理',
-  IN_PROGRESS: '处理中',
   COMPLETED: '已完成',
   CANCELLED: '已取消',
 }
 
 // 确认模式映射
 export const confirmationModeMap: Record<string, string> = {
-  SINGLE: '单人确认',
   ALL: '全部确认',
+  ANY: '任意确认',
 }
 
 // 沟通状态映射

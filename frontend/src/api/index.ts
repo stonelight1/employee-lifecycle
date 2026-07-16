@@ -17,7 +17,13 @@ http.interceptors.response.use(
   (error) => {
     const data = error.response?.data
     if (data?.error) {
-      return Promise.reject(new Error(data.error.message || '请求失败'))
+      const normalized = new Error(data.error.message || '请求失败') as Error & {
+        status?: number
+        response?: unknown
+      }
+      normalized.status = error.response?.status
+      normalized.response = error.response
+      return Promise.reject(normalized)
     }
     return Promise.reject(error)
   },

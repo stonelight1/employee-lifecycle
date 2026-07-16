@@ -85,6 +85,11 @@ const routes: RouteRecordRaw[] = [
   },
   // 沟通
   {
+    path: '/communications/create',
+    name: 'CommunicationCreate',
+    component: () => import('@/views/communication/CommunicationCreate.vue'),
+  },
+  {
     path: '/communications/:id',
     name: 'CommunicationDetail',
     component: () => import('@/views/communication/CommunicationDetail.vue'),

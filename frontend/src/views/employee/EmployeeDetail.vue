@@ -6,9 +6,9 @@ import type { EmployeeItem, EmploymentItem } from '@/types'
 import { formatDate, formatTenure } from '@/utils/date'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
+import { resolveLifecycleStage, isInProbation, pickCurrentEmployment } from '@/utils/lifecycle'
 import EmployeeAvatar from '@/components/business/EmployeeAvatar.vue'
 import LifecycleBadge from '@/components/business/LifecycleBadge.vue'
-import RiskBadge from '@/components/business/RiskBadge.vue'
 import LifecycleStepper from '@/components/business/LifecycleStepper.vue'
 import NextActionCard from '@/components/business/NextActionCard.vue'
 import EmployeeTimeline from '@/components/business/EmployeeTimeline.vue'
@@ -24,35 +24,23 @@ const employeeId = Number(route.params.id)
 const employee = ref<EmployeeItem | null>(null)
 const employments = ref<EmploymentItem[]>([])
 const currentEmployment = ref<EmploymentItem | null>(null)
+const timelineEvents = ref<any[]>([])
+const timelineTotal = ref(0)
+const timelineError = ref('')
+const timelineLoading = ref(false)
 const loading = ref(true)
 const activeTab = ref('overview')
-
-function resolveLifecycleStatus(employment?: EmploymentItem | null, fallbackStatus?: string) {
-  if (!employment) return fallbackStatus
-  if (employment.employment_status === 'PENDING') return 'PENDING'
-  if (employment.employment_status === 'SEPARATING') return 'SEPARATING'
-  if (employment.employment_status === 'SEPARATED') return 'SEPARATED'
-  if (['NOT_STARTED', 'IN_PROGRESS', 'PENDING_REVIEW'].includes(employment.probation_status)) {
-    return 'PROBATION'
-  }
-  return 'ACTIVE'
-}
-
-function isInProbation(employment?: EmploymentItem | null) {
-  return resolveLifecycleStatus(employment) === 'PROBATION'
-}
-
-function pickCurrentEmployment(items: EmploymentItem[]) {
-  return items.find((item) => ['PENDING', 'ACTIVE', 'SEPARATING'].includes(item.employment_status)) || items[0] || null
-}
 
 async function loadData() {
   loading.value = true
   try {
-    const empRes = await get<EmployeeItem>(`/employees/${employeeId}`)
+    const [empRes, empListRes] = await Promise.all([
+      get<EmployeeItem>(`/employees/${employeeId}`),
+      get<{ items: EmploymentItem[]; total: number }>(`/employees/${employeeId}/employments`),
+    ])
+
     if (empRes.success) employee.value = empRes.data!
 
-    const empListRes = await get<{ items: EmploymentItem[]; total: number }>(`/employees/${employeeId}/employments`)
     if (empListRes.data?.items) {
       employments.value = empListRes.data.items
       currentEmployment.value = pickCurrentEmployment(empListRes.data.items)
@@ -62,13 +50,46 @@ async function loadData() {
   } finally {
     loading.value = false
   }
+  void loadTimeline()
 }
 
+async function loadTimeline(limit = 10) {
+  timelineLoading.value = true
+  timelineError.value = ''
+  try {
+    const res = await get<any>(`/employees/${employeeId}/timeline`, { limit })
+    if (res.success && res.data) {
+      if (Array.isArray(res.data)) {
+        timelineEvents.value = res.data
+        timelineTotal.value = res.data.length
+      } else {
+        timelineEvents.value = res.data.items || []
+        timelineTotal.value = res.data.total || 0
+      }
+    } else {
+      timelineError.value = '时间线加载失败'
+    }
+  } catch {
+    timelineError.value = '时间线加载失败'
+  } finally {
+    timelineLoading.value = false
+  }
+}
+
+function loadMoreTimeline() {
+  const nextLimit = Math.min(Math.max(timelineEvents.value.length + 10, 10), 100)
+  void loadTimeline(nextLimit)
+}
+
+const lifecycleStatus = computed(() =>
+  resolveLifecycleStage(currentEmployment.value, employee.value?.employee_status),
+)
+
 const lifecycleSteps = computed(() => {
-  const status = resolveLifecycleStatus(currentEmployment.value, employee.value?.employee_status)
+  const status = lifecycleStatus.value
   return [
     { key: 'PENDING', label: '待入职', completed: false, current: status === 'PENDING' },
-    { key: 'PROBATION', label: '试用期', completed: status !== 'PROBATION' && status !== 'PENDING', current: status === 'PROBATION' },
+    { key: 'PROBATION', label: '试用期', completed: status !== 'PROBATION' && status !== 'PENDING' && status !== 'UNKNOWN', current: status === 'PROBATION' },
     { key: 'REGULARIZATION_PENDING', label: '待转正', completed: false, current: status === 'REGULARIZATION_PENDING' },
     { key: 'ACTIVE', label: '正式在职', completed: status === 'SEPARATED' || status === 'SEPARATING', current: status === 'ACTIVE' },
     { key: 'SEPARATED', label: '离职', completed: false, current: status === 'SEPARATED' || status === 'SEPARATING' },
@@ -77,28 +98,98 @@ const lifecycleSteps = computed(() => {
 
 const actionsList = computed(() => {
   const status = currentEmployment.value?.employment_status
+  const employmentId = currentEmployment.value?.id
+  const lifecycleStage = lifecycleStatus.value
   const actions: { label: string; handler: () => void }[] = []
+
+  if (lifecycleStage === 'PENDING') {
+    // 待入职：只显示真实可用的操作
+    return [
+      {
+        label: '编辑员工',
+        handler: () => router.push(`/employees/${employeeId}/edit`),
+      },
+    ]
+  }
 
   if (isInProbation(currentEmployment.value)) {
     actions.push(
-      { label: '记录沟通', handler: () => {} },
-      { label: '新增评估', handler: () => router.push(`/employments/${currentEmployment.value?.id}/probation-reviews/create`) },
-      { label: '发起转正', handler: () => router.push(`/employments/${currentEmployment.value?.id}/regularization`) },
-      { label: '启动离职', handler: () => router.push(`/employments/${currentEmployment.value?.id}/separation`) },
+      {
+        label: '记录沟通',
+        handler: () => {
+          if (employmentId) {
+            router.push(`/communications/create?employment_id=${employmentId}&employee_id=${employeeId}`)
+          }
+        },
+      },
+      { label: '新增评估', handler: () => router.push(`/employments/${employmentId}/probation-reviews/create`) },
+      { label: '发起转正', handler: () => router.push(`/employments/${employmentId}/regularization`) },
+      { label: '启动离职', handler: () => router.push(`/employments/${employmentId}/separation`) },
     )
   } else if (status === 'ACTIVE') {
     actions.push(
-      { label: '记录沟通', handler: () => {} },
-      { label: '发起异动', handler: () => router.push(`/employments/${currentEmployment.value?.id}/changes/create`) },
-      { label: '启动离职', handler: () => router.push(`/employments/${currentEmployment.value?.id}/separation`) },
+      { label: '记录沟通', handler: () => router.push(`/communications/create?employment_id=${employmentId}&employee_id=${employeeId}`) },
+      { label: '发起异动', handler: () => router.push(`/employments/${employmentId}/changes/create`) },
+      { label: '启动离职', handler: () => router.push(`/employments/${employmentId}/separation`) },
     )
   } else if (status === 'SEPARATED') {
     actions.push(
-      { label: '查看离职记录', handler: () => router.push(`/employments/${currentEmployment.value?.id}/separation`) },
+      { label: '查看离职记录', handler: () => router.push(`/employments/${employmentId}/separation`) },
     )
   }
 
   return actions
+})
+
+// 计算下一步行动来自真实数据
+const nextActionInfo = computed(() => {
+  const emp = currentEmployment.value
+  if (!emp) return null
+
+  const today = new Date()
+  const todayStr = today.toISOString().slice(0, 10)
+
+  // 待入职状态
+  if (lifecycleStatus.value === 'PENDING') {
+    return null
+  }
+
+  // 检查跟进任务
+  if (emp.probation_status === 'PENDING_REVIEW') {
+    return {
+      title: '待转正审批',
+      description: `预计转正日期 ${formatDate(emp.probation_end_date)}`,
+      actionLabel: '处理转正',
+      handler: () => router.push(`/employments/${emp.id}/regularization`),
+    }
+  }
+  if (emp.probation_status === 'IN_PROGRESS' && emp.probation_end_date && emp.probation_end_date < todayStr) {
+    return {
+      title: '试用期已超期',
+      description: `预计转正日期 ${formatDate(emp.probation_end_date)}，已超期`,
+      actionLabel: '处理转正',
+      handler: () => router.push(`/employments/${emp.id}/regularization`),
+    }
+  }
+  if (emp.employment_status === 'PENDING') {
+    return {
+      title: '待入职',
+      description: `入职日期 ${formatDate(emp.hire_date)}`,
+      actionLabel: '查看任职',
+      handler: () => router.push(`/employees/${employeeId}/employments/${emp.id}`),
+    }
+  }
+  if (emp.employment_status === 'SEPARATING') {
+    return {
+      title: '离职办理中',
+      description: '该员工正在进行离职流程',
+      actionLabel: '查看离职',
+      handler: () => router.push(`/employments/${emp.id}/separation`),
+    }
+  }
+
+  // 获取跟进任务数据
+  return null
 })
 
 function handleDelete() {
@@ -144,7 +235,7 @@ onMounted(loadData)
           <div class="identity-info">
             <div class="identity-top">
               <h1 class="identity-name">{{ employee.name }}</h1>
-              <LifecycleBadge :status="resolveLifecycleStatus(currentEmployment, employee.employee_status)" />
+              <LifecycleBadge :status="lifecycleStatus" />
             </div>
             <div class="identity-meta">
               <span>{{ currentEmployment?.department || '—' }}</span>
@@ -153,17 +244,32 @@ onMounted(loadData)
               <span class="meta-dot">·</span>
               <span>{{ formatDate(currentEmployment?.hire_date) }} 入职</span>
             </div>
-            <div class="identity-next">
+            <div v-if="lifecycleStatus === 'PENDING'" class="identity-next">
+              <div class="card pending-info-card">
+                <p class="text-sm text-tertiary">员工尚未入职</p>
+                <p class="text-xs text-tertiary" style="margin-top:4px;">入职后系统会自动生成试用期和跟进节点</p>
+              </div>
+            </div>
+            <div v-else-if="nextActionInfo" class="identity-next">
               <NextActionCard
-                title="7 天跟进已逾期 2 天"
-                description="建议尽快完成沟通并记录结果"
-                action-label="立即处理"
-                :overdue="2"
+                :title="nextActionInfo.title"
+                :description="nextActionInfo.description"
+                :action-label="nextActionInfo.actionLabel"
+                @action="nextActionInfo.handler"
               />
+            </div>
+            <div v-else class="identity-next">
+              <p class="text-sm text-tertiary">当前暂无需要处理的事项</p>
             </div>
           </div>
           <div class="identity-actions">
-            <button class="action-icon-btn" :title="action.label" v-for="action in actionsList" :key="action.label" @click="action.handler">
+            <button
+              v-for="action in actionsList"
+              :key="action.label"
+              class="action-icon-btn"
+              :title="action.label"
+              @click="action.handler"
+            >
               {{ action.label }}
             </button>
             <button class="action-icon-btn danger" @click="handleDelete">删除</button>
@@ -201,7 +307,14 @@ onMounted(loadData)
 
           <div class="card section-card">
             <div class="section-title">员工时间线</div>
-            <EmployeeTimeline :events="[]" />
+            <EmployeeTimeline
+              :events="timelineEvents"
+              :total="timelineTotal"
+              :loading="timelineLoading"
+              :error="timelineError"
+              @retry="loadTimeline"
+              @load-more="loadMoreTimeline"
+            />
           </div>
         </div>
 
@@ -225,6 +338,16 @@ onMounted(loadData)
               size="md"
             />
           </div>
+
+          <div v-if="nextActionInfo" class="card section-card">
+            <div class="section-title">下一步行动</div>
+            <NextActionCard
+              :title="nextActionInfo.title"
+              :description="nextActionInfo.description"
+              :action-label="nextActionInfo.actionLabel"
+              @action="nextActionInfo.handler"
+            />
+          </div>
         </div>
       </div>
 
@@ -241,7 +364,7 @@ onMounted(loadData)
             <div class="text-xs text-tertiary mt-1">入职 {{ formatDate(emp.hire_date) }}</div>
           </div>
           <div class="emp-status-badge">
-            <LifecycleBadge :status="resolveLifecycleStatus(emp)" size="sm" />
+            <LifecycleBadge :status="resolveLifecycleStage(emp)" size="sm" />
           </div>
           <div class="emp-row-links">
             <router-link :to="`/employees/${employeeId}/employments/${emp.id}`" class="text-sm">详情</router-link>
@@ -442,6 +565,11 @@ onMounted(loadData)
   color: var(--color-primary);
   font-size: var(--font-size-sm);
   cursor: pointer;
+}
+
+.pending-info-card {
+  padding: 12px 16px;
+  background: var(--color-bg);
 }
 
 @media (max-width: 1024px) {

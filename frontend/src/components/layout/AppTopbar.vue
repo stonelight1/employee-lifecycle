@@ -1,15 +1,46 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, onMounted, onUnmounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 
 const router = useRouter()
+const route = useRoute()
 const searchQuery = ref('')
 const showSearch = ref(false)
 let blurTimer: ReturnType<typeof setTimeout> | null = null
 
+const breadcrumb = ref('员工生命周期管理系统')
+
+// 根据路由生成面包屑
+const routeTitles: Record<string, string> = {
+  Dashboard: '工作台',
+  WorkItemCenter: '工作事项',
+  EmployeeList: '员工中心',
+  EmployeeCreate: '新增员工',
+  EmployeeDetail: '员工详情',
+  EmployeeEdit: '编辑员工',
+  EmploymentCreate: '新增任职',
+  EmploymentDetail: '任职详情',
+  ProbationCenter: '试用期中心',
+  RegularizationCenter: '转正管理',
+  MovementCenter: '异动与离职',
+  FollowupNodeList: '节点配置',
+  FollowupTaskList: '跟进任务',
+  FollowupTaskDetail: '任务详情',
+  TodoList: '待办事项',
+  OperationLogList: '操作日志',
+}
+
+function updateBreadcrumb() {
+  const name = route.name as string
+  breadcrumb.value = routeTitles[name] || '员工生命周期管理系统'
+}
+
 function handleSearch() {
   if (searchQuery.value.trim()) {
-    router.push(`/employees?keyword=${encodeURIComponent(searchQuery.value.trim())}`)
+    router.push({
+      path: '/employees',
+      query: { keyword: searchQuery.value.trim() },
+    })
     searchQuery.value = ''
     showSearch.value = false
   }
@@ -20,7 +51,7 @@ function goToNewEmployee() {
 }
 
 function handleKeydown(e: KeyboardEvent) {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
     e.preventDefault()
     showSearch.value = !showSearch.value
     if (showSearch.value) {
@@ -41,17 +72,20 @@ function onSearchFocus() {
   showSearch.value = true
 }
 
-if (typeof window !== 'undefined') {
+onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
-}
+  updateBreadcrumb()
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeydown)
+})
 </script>
 
 <template>
   <header class="topbar">
     <div class="topbar-left">
-      <slot name="breadcrumb">
-        <span class="topbar-title">员工生命周期管理系统</span>
-      </slot>
+      <span class="topbar-title">{{ breadcrumb }}</span>
     </div>
 
     <div class="topbar-center">
@@ -62,7 +96,7 @@ if (typeof window !== 'undefined') {
             class="search-input"
             :class="{ active: showSearch }"
             type="text"
-            placeholder="搜索员工姓名、部门、岗位  Ctrl+K"
+            placeholder="搜索员工姓名  Ctrl+K"
             @focus="onSearchFocus"
             @blur="onSearchBlur"
           />

@@ -41,11 +41,12 @@ from .routers import (
     separation,
     todos,
     operation_logs,
+    aggregate,
 )
 
 app = FastAPI(
     title="员工生命周期管理系统 API",
-    version="0.4.0",
+    version="0.4.2",
     description="Employee Lifecycle Management System",
 )
 
@@ -118,8 +119,9 @@ app.include_router(employment_changes.router, prefix="/api")
 app.include_router(separation.router, prefix="/api")
 app.include_router(todos.router, prefix="/api")
 app.include_router(operation_logs.router, prefix="/api")
+app.include_router(aggregate.router, prefix="/api")
 
 
 @app.get("/api/health")
 async def health_check():
-    return {"success": True, "data": {"status": "ok", "version": "0.3.0"}}
+    return {"success": True, "data": {"status": "ok", "version": "0.4.2"}}

@@ -3,7 +3,8 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { get } from '@/api'
 import { formatDate } from '@/utils/date'
-import LifecycleBadge from '@/components/business/LifecycleBadge.vue'
+import { changeTypeMap, separationTypeMap, getStatusLabel } from '@/constants/status'
+import ChangeDiffPanel from '@/components/business/ChangeDiffPanel.vue'
 import BaseEmpty from '@/components/base/BaseEmpty.vue'
 
 const router = useRouter()
@@ -15,59 +16,79 @@ const activeTab = ref<'changes' | 'separation'>('changes')
 async function loadData() {
   loading.value = true
   try {
-    const empRes = await get<{ items: any[]; total: number }>('/employees', { page: 1, page_size: 100 })
-    const shifts: any[] = []
-    const seps: any[] = []
+    // 使用聚合接口
+    const res = await get<{ changes: any[]; separations: any[] }>('/employee-movements')
+    if (res.success && res.data) {
+      changes.value = res.data.changes || []
+      separations.value = res.data.separations || []
+    }
+  } catch (e: any) {
+    console.error('加载异动离职数据失败:', e)
+    // 降级：直接使用旧方式
+    try {
+      await loadDataFallback()
+    } catch (fallbackErr) {
+      console.error('降级加载也失败:', fallbackErr)
+    }
+  } finally {
+    loading.value = false
+  }
+}
 
-    if (empRes.success && empRes.data) {
-      for (const emp of empRes.data.items) {
+async function loadDataFallback() {
+  const empRes = await get<{ items: any[]; total: number }>('/employees', { page: 1, page_size: 100 })
+  const shifts: any[] = []
+  const seps: any[] = []
+
+  if (empRes.success && empRes.data) {
+    for (const emp of empRes.data.items) {
+      const empListRes = await get<{ items: any[]; total: number }>(`/employees/${emp.id}/employments`)
+      const employments = empListRes.data?.items || []
+      for (const e of employments) {
         try {
-          const changesRes = await get<{ items: any[]; total: number }>(`/employees/${emp.id}/employments`)
-          const employments = changesRes.data?.items || []
-          for (const e of employments) {
-            // Load changes for this employment
-            try {
-              const chRes = await get<{ items: any[] }>(`/employments/${e.id}/changes`)
-              if (chRes.data?.items) {
-                for (const c of chRes.data.items) {
-                  shifts.push({
-                    ...c,
-                    employee_name: emp.name,
-                    department: e.department,
-                    position: e.position,
-                    employment_id: e.id,
-                    employee_id: emp.id,
-                  })
-                }
-              }
-            } catch {}
-            // Load separations
-            try {
-              const sepRes = await get<{ items: any[] }>(`/employments/${e.id}/separation-records`)
-              if (sepRes.data?.items) {
-                for (const s of sepRes.data.items) {
-                  seps.push({
-                    ...s,
-                    employee_name: emp.name,
-                    department: e.department,
-                    position: e.position,
-                    employment_id: e.id,
-                    employee_id: emp.id,
-                  })
-                }
-              }
-            } catch {}
+          const chRes = await get<{ items: any[] }>(`/employments/${e.id}/changes`)
+          if (chRes.data?.items) {
+            for (const c of chRes.data.items) {
+              shifts.push({
+                ...c,
+                employee_name: emp.name,
+                department: e.department,
+                position: e.position,
+                employment_id: e.id,
+                employee_id: emp.id,
+              })
+            }
+          }
+        } catch {}
+        try {
+          const sepRes = await get<{ items: any[] }>(`/employments/${e.id}/separation-records`)
+          if (sepRes.data?.items) {
+            for (const s of sepRes.data.items) {
+              seps.push({
+                ...s,
+                employee_name: emp.name,
+                department: e.department,
+                position: e.position,
+                employment_id: e.id,
+                employee_id: emp.id,
+              })
+            }
           }
         } catch {}
       }
     }
-    changes.value = shifts
-    separations.value = seps
-  } catch (e: any) {
-    console.error('加载异动离职数据失败:', e)
-  } finally {
-    loading.value = false
   }
+  changes.value = shifts
+  separations.value = seps
+}
+
+function parseChangeData(data: any): Record<string, any> | null {
+  if (!data) return null
+  if (typeof data === 'string') {
+    try { return JSON.parse(data) } catch { return null }
+  }
+  if (typeof data === 'object') return data
+  return null
 }
 
 onMounted(loadData)
@@ -101,9 +122,8 @@ onMounted(loadData)
           <thead>
             <tr>
               <th>员工</th>
-              <th>类型</th>
-              <th>变更前</th>
-              <th>变更后</th>
+              <th>异动类型</th>
+              <th>变更详情</th>
               <th>生效日期</th>
               <th>操作</th>
             </tr>
@@ -112,10 +132,15 @@ onMounted(loadData)
             <tr v-for="c in changes" :key="c.id">
               <td>
                 <span class="link" @click="router.push(`/employees/${c.employee_id}`)">{{ c.employee_name }}</span>
+                <div class="text-xs text-tertiary">{{ c.department }} · {{ c.position }}</div>
               </td>
-              <td>{{ c.change_type }}</td>
-              <td class="data-cell">{{ typeof c.before_data === 'object' ? JSON.stringify(c.before_data) : c.before_data || '-' }}</td>
-              <td class="data-cell">{{ typeof c.after_data === 'object' ? JSON.stringify(c.after_data) : c.after_data || '-' }}</td>
+              <td>{{ getStatusLabel(changeTypeMap, c.change_type) }}</td>
+              <td class="diff-cell">
+                <ChangeDiffPanel
+                  :before-data="parseChangeData(c.before_data)"
+                  :after-data="parseChangeData(c.after_data)"
+                />
+              </td>
               <td>{{ c.effective_date || '-' }}</td>
               <td>
                 <button class="table-btn" @click="router.push(`/employments/${c.employment_id}/changes`)">查看</button>
@@ -147,8 +172,9 @@ onMounted(loadData)
             <tr v-for="s in separations" :key="s.id">
               <td>
                 <span class="link" @click="router.push(`/employees/${s.employee_id}`)">{{ s.employee_name }}</span>
+                <div class="text-xs text-tertiary">{{ s.department }} · {{ s.position }}</div>
               </td>
-              <td>{{ s.separation_type || '-' }}</td>
+              <td>{{ getStatusLabel(separationTypeMap, s.separation_type) }}</td>
               <td>{{ s.planned_separation_date || '-' }}</td>
               <td>{{ s.actual_separation_date || '-' }}</td>
               <td class="data-cell">{{ s.reason || '-' }}</td>
@@ -191,7 +217,8 @@ onMounted(loadData)
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: 10px 16px; text-align: left; border-bottom: 1px solid var(--color-border); font-size: var(--font-size-sm); }
 th { background: var(--color-bg); font-weight: 600; color: var(--color-text-secondary); }
-.data-cell { max-width: 150px; white-space: pre-wrap; font-size: var(--font-size-xs); }
+.diff-cell { max-width: 250px; }
+.data-cell { max-width: 150px; font-size: var(--font-size-xs); }
 .link { color: var(--color-primary); cursor: pointer; }
 .table-btn { padding: 3px 10px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); cursor: pointer; font-size: var(--font-size-xs); }
 </style>

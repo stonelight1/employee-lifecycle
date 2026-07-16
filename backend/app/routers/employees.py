@@ -32,19 +32,25 @@ router = APIRouter(tags=["员工"])
 @router.get("/employees", response_model=ApiResponse[EmployeeListResponse])
 def list_employees_route(
     params: PageParams = Depends(),
-    keyword: str | None = Query(default=None, description="关键词搜索"),
+    keyword: str | None = Query(default=None, description="关键词搜索（姓名/编号/手机号）"),
     name: str | None = Query(default=None, description="按姓名筛选"),
     employee_no: str | None = Query(default=None, description="按编号筛选"),
     employee_status: str | None = Query(default=None, description="按状态筛选"),
+    lifecycle_stage: str | None = Query(default=None, description="生命周期阶段：PENDING/PROBATION/REGULARIZATION_PENDING/ACTIVE/SEPARATING/SEPARATED"),
+    risk_level: str | None = Query(default=None, description="风险等级：NONE/LOW/MEDIUM/HIGH"),
+    include_employment: bool | None = Query(default=None, description="是否包含当前任职和 next_action 信息"),
     db: Session = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
-    """员工列表（分页）。"""
+    """员工列表（分页）。支持按生命周期阶段和风险等级筛选。"""
     filters = {
         "keyword": keyword,
         "name": name,
         "employee_no": employee_no,
         "employee_status": employee_status,
+        "lifecycle_stage": lifecycle_stage,
+        "risk_level": risk_level,
+        "include_employment": include_employment,
         "page": params.page,
         "page_size": params.page_size,
         "sort_by": params.sort_by,
@@ -163,16 +169,17 @@ def delete_employee_route(
     }
 
 
-@router.get("/employees/{employee_id}/timeline", response_model=ApiResponse[list])
+@router.get("/employees/{employee_id}/timeline", response_model=ApiResponse[dict])
 def get_employee_timeline_route(
     employee_id: int,
+    limit: int | None = Query(default=10, ge=1, le=100, description="返回事件数量"),
     db: Session = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
-    """员工时间线。"""
-    events = get_employee_timeline(db, employee_id)
+    """员工时间线（后端统一聚合所有事件类型）。"""
+    result = get_employee_timeline(db, employee_id, limit=limit or 10)
     return {
         "success": True,
-        "data": events,
+        "data": result,
         "request_id": str(uuid.uuid4()),
     }

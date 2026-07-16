@@ -1,66 +1,91 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { get } from '@/api'
 import { formatDate } from '@/utils/date'
+import { resolveLifecycleStage } from '@/utils/lifecycle'
 import LifecycleBadge from '@/components/business/LifecycleBadge.vue'
 import BaseEmpty from '@/components/base/BaseEmpty.vue'
+import dayjs from 'dayjs'
 
 const router = useRouter()
-const employees = ref<any[]>([])
 const loading = ref(true)
 
-const groups = ref({
-  dueSoon: [] as any[],
-  dueLater: [] as any[],
-  overdue: [] as any[],
-  completed: [] as any[],
+interface RegularizationCandidate {
+  employee_id: number
+  employee_name: string
+  employment_id: number
+  department: string
+  position: string
+  hire_date: string
+  probation_end_date: string
+  lifecycle_stage: string
+  overdue_days: number
+}
+
+const allCandidates = ref<RegularizationCandidate[]>([])
+
+const groups = computed(() => {
+  const overdue: RegularizationCandidate[] = []
+  const dueSoon: RegularizationCandidate[] = []
+  const dueLater: RegularizationCandidate[] = []
+  const completed: RegularizationCandidate[] = []
+
+  for (const c of allCandidates.value) {
+    if (c.lifecycle_stage === 'REGULARIZATION_PENDING' && c.overdue_days > 0) {
+      overdue.push(c)
+    } else if (c.lifecycle_stage === 'REGULARIZATION_PENDING' && c.overdue_days === 0) {
+      dueSoon.push(c)
+    } else if (c.lifecycle_stage === 'REGULARIZATION_PENDING' && c.overdue_days < 0) {
+      dueLater.push(c)
+    } else if (c.lifecycle_stage === 'ACTIVE') {
+      completed.push(c)
+    }
+  }
+
+  return { overdue, dueSoon, dueLater, completed }
 })
 
 async function loadRegularizationCandidates() {
   loading.value = true
   try {
-    const res = await get<{ items: any[]; total: number }>('/employees', { page: 1, page_size: 100 })
+    // 获取所有员工（包含任职信息）
+    const res = await get<{ items: any[]; total: number }>('/employees', {
+      page: 1,
+      page_size: 100,
+      include_employment: true,
+    })
     if (res.success && res.data) {
-      const all = res.data.items
-      const candidates: any[] = []
-      for (const emp of all) {
-        const empRes = await get<any>(`/employees/${emp.id}/employments`)
-        const employments = empRes.data?.items || []
-        for (const e of employments) {
-          if (e.probation_end_date) {
-            candidates.push({
-              employee_id: emp.id,
-              employee_name: emp.name,
-              employment_id: e.id,
-              department: e.department,
-              position: e.position,
-              hire_date: e.hire_date,
-              probation_end_date: e.probation_end_date,
-              employment_status: e.employment_status,
-              employee_status: emp.employee_status,
-            })
-          }
-        }
+      const now = dayjs()
+      const items: RegularizationCandidate[] = []
+
+      for (const emp of res.data.items) {
+        const ce = emp.current_employment
+        if (!ce || !ce.probation_end_date) continue
+
+        const stage = resolveLifecycleStage(ce, emp.employee_status)
+        const endDate = dayjs(ce.probation_end_date)
+
+        // 只包含待转正和已转正员工
+        if (stage !== 'REGULARIZATION_PENDING' && stage !== 'ACTIVE') continue
+
+        const overdue = endDate.isBefore(now, 'day') ? now.diff(endDate, 'day') : 0
+        const daysUntil = endDate.diff(now, 'day')
+
+        items.push({
+          employee_id: emp.id,
+          employee_name: emp.name,
+          employment_id: ce.id,
+          department: ce.department || '—',
+          position: ce.position || '—',
+          hire_date: ce.hire_date,
+          probation_end_date: ce.probation_end_date,
+          lifecycle_stage: stage,
+          overdue_days: Math.max(0, overdue),
+        })
       }
 
-      const now = new Date()
-      groups.value = {
-        dueSoon: candidates.filter((c) => {
-          const end = new Date(c.probation_end_date)
-          const diff = Math.ceil((end.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
-          return diff <= 7 && diff >= 0
-        }),
-        dueLater: candidates.filter((c) => {
-          const end = new Date(c.probation_end_date)
-          const diff = Math.ceil((end.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
-          return diff > 7 && diff <= 30
-        }),
-        overdue: candidates.filter((c) => {
-          return new Date(c.probation_end_date) < now && c.employment_status !== 'REGULAR'
-        }),
-        completed: candidates.filter((c) => c.employment_status === 'REGULAR'),
-      }
+      allCandidates.value = items
     }
   } catch (e: any) {
     console.error('加载转正数据失败:', e)
@@ -81,7 +106,7 @@ onMounted(loadRegularizationCandidates)
 
     <div v-if="loading" class="loading-state text-tertiary">加载中...</div>
 
-    <div v-else-if="!groups.dueSoon.length && !groups.overdue.length && !groups.dueLater.length && !groups.completed.length">
+    <div v-else-if="allCandidates.length === 0">
       <BaseEmpty title="暂无转正相关数据" />
     </div>
 
@@ -96,7 +121,7 @@ onMounted(loadRegularizationCandidates)
               <span class="text-sm text-tertiary">{{ c.department }} · {{ c.position }}</span>
             </div>
             <div class="emp-row-actions">
-              <span class="text-sm text-danger">已超期</span>
+              <span class="text-sm text-danger">已超期 {{ c.overdue_days }} 天</span>
               <button class="row-btn" @click="router.push(`/employments/${c.employment_id}/regularization`)">处理转正</button>
             </div>
           </div>
@@ -120,7 +145,7 @@ onMounted(loadRegularizationCandidates)
         </div>
       </div>
 
-      <!-- 30天内 -->
+      <!-- 更晚 -->
       <div v-if="groups.dueLater.length > 0" class="section-card card">
         <div class="section-title">30 天内待转正</div>
         <div class="emp-rows">
@@ -136,7 +161,7 @@ onMounted(loadRegularizationCandidates)
         </div>
       </div>
 
-      <!-- 已完成 -->
+      <!-- 已完成转正 -->
       <div v-if="groups.completed.length > 0" class="section-card card">
         <div class="section-title">已完成转正</div>
         <div class="emp-rows">
