@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { Plus } from 'lucide-vue-next'
 
 const router = useRouter()
 const route = useRoute()
@@ -30,6 +31,57 @@ const routeTitles: Record<string, string> = {
   OperationLogList: '操作日志',
 }
 
+// ====== 员工中心页面的生命周期筛选 ======
+const isEmployeePage = computed(() => route.path === '/employees')
+
+const currentStage = computed(() => (route.query.lifecycle_stage as string) || '')
+
+const stageFilters = [
+  { label: '全部', value: '' },
+  { label: '待入职', value: 'PENDING' },
+  { label: '试用期', value: 'PROBATION' },
+  { label: '待转正', value: 'REGULARIZATION_PENDING' },
+  { label: '正式在职', value: 'ACTIVE' },
+  { label: '离职办理中', value: 'SEPARATING' },
+  { label: '已离职', value: 'SEPARATED' },
+]
+
+function setStageFilter(value: string) {
+  router.replace({
+    query: {
+      ...route.query,
+      lifecycle_stage: value || undefined,
+      page: undefined,
+    },
+  })
+}
+
+// ====== 员工中心页面的搜索 ======
+const employeeSearchQuery = ref('')
+
+// 从路由同步搜索关键词
+watch(() => route.query.keyword, (kw) => {
+  if (isEmployeePage.value) {
+    employeeSearchQuery.value = (kw as string) || ''
+  }
+})
+
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+function onEmployeeSearchInput() {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    const val = employeeSearchQuery.value.trim()
+    router.replace({
+      query: {
+        ...route.query,
+        keyword: val || undefined,
+        page: undefined,
+      },
+    })
+  }, 300)
+}
+
+// ====== 全局搜索 ======
 function updateBreadcrumb() {
   const name = route.name as string
   breadcrumb.value = routeTitles[name] || '员工生命周期管理系统'
@@ -86,10 +138,37 @@ onUnmounted(() => {
   <header class="topbar">
     <div class="topbar-left">
       <span class="topbar-title">{{ breadcrumb }}</span>
+
+      <!-- 员工中心页面的生命周期筛选 -->
+      <div v-if="isEmployeePage" class="stage-filters">
+        <button
+          v-for="f in stageFilters"
+          :key="f.value"
+          class="stage-filter-btn"
+          :class="{ active: currentStage === f.value }"
+          @click="setStageFilter(f.value)"
+        >
+          {{ f.label }}
+        </button>
+      </div>
     </div>
 
-    <div class="topbar-center">
-      <div class="search-wrapper" :class="{ expanded: showSearch }">
+    <div class="topbar-right">
+      <!-- 员工中心页面的实时搜索 -->
+      <div v-if="isEmployeePage" class="search-wrapper employee-search">
+        <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
+        </svg>
+        <input
+          v-model="employeeSearchQuery"
+          class="search-input"
+          placeholder="搜索姓名、编号、手机号、部门或岗位"
+          @input="onEmployeeSearchInput"
+        />
+      </div>
+
+      <!-- 非员工中心页面的全局搜索 -->
+      <div v-else class="search-wrapper" :class="{ expanded: showSearch }">
         <form @submit.prevent="handleSearch">
           <input
             v-model="searchQuery"
@@ -107,13 +186,9 @@ onUnmounted(() => {
           </svg>
         </button>
       </div>
-    </div>
 
-    <div class="topbar-right">
       <button class="btn-add" @click="goToNewEmployee">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-        </svg>
+        <Plus :size="16" />
         <span>新增员工</span>
       </button>
     </div>
@@ -132,21 +207,77 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 .topbar-left {
+  flex: 1;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 .topbar-title {
   font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
+  white-space: nowrap;
 }
-.topbar-center {
-  flex: 1;
+
+/* ===== 生命周期筛选标签（员工中心页） ===== */
+.stage-filters {
   display: flex;
-  justify-content: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.stage-filters::-webkit-scrollbar {
+  display: none;
+}
+.stage-filter-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 99px;
+  background: var(--color-surface);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.stage-filter-btn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+.stage-filter-btn.active {
+  background: var(--color-primary);
+  color: #fff;
+  border-color: var(--color-primary);
+}
+
+/* ===== 搜索 ===== */
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 .search-wrapper {
   position: relative;
   max-width: 400px;
   width: 100%;
+}
+.search-wrapper.employee-search {
+  max-width: 280px;
+  width: 280px;
+}
+.search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--color-text-tertiary);
+  pointer-events: none;
+  z-index: 1;
 }
 .search-input {
   width: 100%;
@@ -177,12 +308,6 @@ onUnmounted(() => {
   cursor: pointer;
   color: var(--color-text-tertiary);
   padding: 2px;
-}
-.topbar-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
 }
 .btn-add {
   display: inline-flex;

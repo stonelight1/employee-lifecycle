@@ -29,6 +29,10 @@ from app.models.change import EmploymentChange
 from app.models.separation import SeparationRecord
 from app.models.todo import SystemTodo
 from app.models.operation_log import OperationLog
+from app.models.roster_batch import RosterImportBatch
+from app.models.roster_alias import RosterColumnAlias
+from app.models.roster_value_alias import RosterValueAlias
+from app.models.org_reference import OrganizationReference
 
 
 @pytest.fixture(scope="function")

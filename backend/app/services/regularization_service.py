@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session as DBSession
 
@@ -11,16 +11,14 @@ from ..enums import (
     OperationObjectType,
     ProbationStatus,
     RegularizationDecision,
-    ReviewStage,
     TodoStatus,
 )
 from ..exceptions import (
     Conflict,
-    FinalProbationReviewRequired,
     InvalidStateTransition,
     ResourceNotFound,
 )
-from ..models import EmploymentRecord, ProbationReview, RegularizationRecord, SystemTodo
+from ..models import EmploymentRecord, RegularizationRecord, SystemTodo
 from .operation_log_service import create_log
 
 
@@ -38,26 +36,11 @@ def _get_employment(db: DBSession, employment_id: int) -> EmploymentRecord:
     return emp
 
 
-def _get_completed_final_review(db: DBSession, employment_id: int) -> Optional[ProbationReview]:
-    """获取已完成的 FINAL 评估。"""
-    return db.query(ProbationReview).filter(
-        ProbationReview.employment_id == employment_id,
-        ProbationReview.review_stage == ReviewStage.FINAL.value,
-        ProbationReview.review_status.isnot(None),
-        ProbationReview.is_deleted == False,
-    ).order_by(ProbationReview.review_seq.desc()).first()
-
-
 def preview_regularization(db: DBSession, employment_id: int) -> dict[str, Any]:
     """转正前预览。"""
     emp = _get_employment(db, employment_id)
 
-    final_review = _get_completed_final_review(db, employment_id)
-
     warnings = []
-    if not final_review:
-        warnings.append("缺少已完成的最终试用期评估")
-
     if emp.probation_status not in (ProbationStatus.PENDING_REVIEW, ProbationStatus.IN_PROGRESS):
         if emp.probation_status == ProbationStatus.REGULARIZED:
             warnings.append("员工已转正")
@@ -66,7 +49,7 @@ def preview_regularization(db: DBSession, employment_id: int) -> dict[str, Any]:
         elif emp.probation_status == ProbationStatus.TERMINATED:
             warnings.append("员工试用期已终止")
 
-    can_regularize = final_review is not None and emp.probation_status in (
+    can_regularize = emp.probation_status in (
         ProbationStatus.PENDING_REVIEW, ProbationStatus.IN_PROGRESS
     )
 
@@ -76,8 +59,8 @@ def preview_regularization(db: DBSession, employment_id: int) -> dict[str, Any]:
         "probation_start_date": emp.probation_start_date,
         "probation_end_date": emp.probation_end_date,
         "probation_status": emp.probation_status.value if hasattr(emp.probation_status, "value") else emp.probation_status,
-        "has_completed_final_review": final_review is not None,
-        "final_review": _to_dict(final_review) if final_review else None,
+        "has_completed_final_review": False,
+        "final_review": None,
         "can_regularize": can_regularize,
         "warnings": warnings,
     }
@@ -92,11 +75,6 @@ def confirm_regularization(
     """转正确认。"""
     emp = _get_employment(db, employment_id)
 
-    # 检查 FINAL 评估
-    final_review = _get_completed_final_review(db, employment_id)
-    if not final_review:
-        raise FinalProbationReviewRequired()
-
     # 检查任职状态
     if emp.probation_status not in (ProbationStatus.PENDING_REVIEW, ProbationStatus.IN_PROGRESS):
         raise InvalidStateTransition(f"当前试用期状态不允许转正: {emp.probation_status}")
@@ -104,6 +82,10 @@ def confirm_regularization(
     decision_str = data["decision"].value if hasattr(data["decision"], "value") else data["decision"]
     operator_id = operator.get("user_id", "system")
     now = datetime.now()
+
+    # 拒绝 EXTENDED 决策
+    if decision_str == RegularizationDecision.EXTENDED.value:
+        raise InvalidStateTransition("转正不支持试用期延长决策")
 
     # 幂等检查：同一任职只能有一条生效的 APPROVED
     if decision_str == RegularizationDecision.APPROVED.value:
@@ -118,12 +100,14 @@ def confirm_regularization(
 
     before_emp = _to_dict(emp)
 
+    # 计算转正生效日期（从入参、任职记录的预计转正日期或今天）
+    effective_date = data.get("effective_date") or emp.expected_regularization_date or date.today()
+
     # 创建转正记录
     record = RegularizationRecord(
         employment_id=emp.id,
-        probation_review_id=final_review.id,
         decision=decision_str,
-        effective_date=data.get("effective_date"),
+        effective_date=effective_date,
         new_probation_end_date=data.get("new_probation_end_date"),
         decision_reason=data.get("decision_reason"),
         ai_summary_version_id=data.get("ai_summary_version_id"),
@@ -139,27 +123,35 @@ def confirm_regularization(
     if decision_str == RegularizationDecision.APPROVED.value:
         emp.probation_status = ProbationStatus.REGULARIZED
         emp.employment_status = EmploymentStatus.ACTIVE
-        emp.regularization_date = data.get("effective_date") or date.today()
-    elif decision_str == RegularizationDecision.EXTENDED.value:
-        emp.probation_status = ProbationStatus.IN_PROGRESS
-        if data.get("new_probation_end_date"):
-            emp.probation_end_date = data["new_probation_end_date"]
+        emp.regularization_date = effective_date
+        emp.actual_regularization_date = data.get("actual_regularization_date") or date.today()
+
+        # 完成相关待办
+        pending_todos = db.query(SystemTodo).filter(
+            SystemTodo.business_id == employment_id,
+            SystemTodo.todo_status == TodoStatus.PENDING.value,
+            SystemTodo.is_deleted == False,
+        ).all()
+        for todo in pending_todos:
+            todo.todo_status = TodoStatus.COMPLETED.value
+            todo.updated_by = operator_id
+            todo.updated_at = now
     elif decision_str == RegularizationDecision.NOT_APPROVED.value:
         emp.probation_status = ProbationStatus.FAILED
 
+        # 取消相关待办
+        pending_todos = db.query(SystemTodo).filter(
+            SystemTodo.business_id == employment_id,
+            SystemTodo.todo_status == TodoStatus.PENDING.value,
+            SystemTodo.is_deleted == False,
+        ).all()
+        for todo in pending_todos:
+            todo.todo_status = TodoStatus.CANCELLED.value
+            todo.updated_by = operator_id
+            todo.updated_at = now
+
     emp.updated_by = operator_id
     emp.updated_at = now
-
-    # 更新待办：完成相关待办
-    pending_todos = db.query(SystemTodo).filter(
-        SystemTodo.business_id == employment_id,
-        SystemTodo.todo_status == TodoStatus.PENDING.value,
-        SystemTodo.is_deleted == False,
-    ).all()
-    for todo in pending_todos:
-        todo.todo_status = TodoStatus.CANCELLED.value
-        todo.updated_by = operator_id
-        todo.updated_at = now
 
     db.flush()
 

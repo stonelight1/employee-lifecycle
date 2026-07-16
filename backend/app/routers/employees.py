@@ -29,20 +29,19 @@ from ..services.operation_log_service import create_log
 router = APIRouter(tags=["员工"])
 
 
-@router.get("/employees", response_model=ApiResponse[EmployeeListResponse])
+@router.get("/employees", response_model=ApiResponse[dict])
 def list_employees_route(
     params: PageParams = Depends(),
-    keyword: str | None = Query(default=None, description="关键词搜索（姓名/编号/手机号）"),
+    keyword: str | None = Query(default=None, description="关键词搜索（姓名/编号/手机号/部门/岗位）"),
     name: str | None = Query(default=None, description="按姓名筛选"),
     employee_no: str | None = Query(default=None, description="按编号筛选"),
     employee_status: str | None = Query(default=None, description="按状态筛选"),
     lifecycle_stage: str | None = Query(default=None, description="生命周期阶段：PENDING/PROBATION/REGULARIZATION_PENDING/ACTIVE/SEPARATING/SEPARATED"),
     risk_level: str | None = Query(default=None, description="风险等级：NONE/LOW/MEDIUM/HIGH"),
-    include_employment: bool | None = Query(default=None, description="是否包含当前任职和 next_action 信息"),
     db: Session = Depends(get_db_session),
     current_user: dict = Depends(get_current_user),
 ):
-    """员工列表（分页）。支持按生命周期阶段和风险等级筛选。"""
+    """员工列表（分页，聚合返回任职、风险、下一事项）。"""
     filters = {
         "keyword": keyword,
         "name": name,
@@ -50,7 +49,6 @@ def list_employees_route(
         "employee_status": employee_status,
         "lifecycle_stage": lifecycle_stage,
         "risk_level": risk_level,
-        "include_employment": include_employment,
         "page": params.page,
         "page_size": params.page_size,
         "sort_by": params.sort_by,

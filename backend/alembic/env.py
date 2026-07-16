@@ -27,6 +27,23 @@ import app.models.change  # noqa: F401
 import app.models.separation  # noqa: F401
 import app.models.todo  # noqa: F401
 import app.models.operation_log  # noqa: F401
+# 新增模型
+import app.models.employee_profile  # noqa: F401
+import app.models.attribute_history  # noqa: F401
+import app.models.financial_account  # noqa: F401
+import app.models.contract  # noqa: F401
+import app.models.compensation  # noqa: F401
+import app.models.assessment  # noqa: F401
+import app.models.note  # noqa: F401
+import app.models.separation_checklist  # noqa: F401
+import app.models.roster_batch  # noqa: F401
+import app.models.roster_row  # noqa: F401
+import app.models.roster_issue  # noqa: F401
+import app.models.hr_confirmation  # noqa: F401
+import app.models.roster_operation  # noqa: F401
+import app.models.org_reference  # noqa: F401
+import app.models.roster_alias  # noqa: F401
+import app.models.roster_value_alias  # noqa: F401
 from app.models.base import Base
 
 config = context.config

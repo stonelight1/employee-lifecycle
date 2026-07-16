@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { get } from '@/api'
 import type { EmploymentItem, FollowupTaskItem, CommunicationItem } from '@/types'
+import { getStatusLabel, employmentStatusMap, probationStatusMap, followupStatusMap, communicationStatusMap, communicationTypeMap } from '@/constants/status'
 
 const route = useRoute()
 const router = useRouter()
@@ -40,8 +41,8 @@ onMounted(async () => {
       <div class="section-title">基本信息</div>
       <div class="info-grid">
         <div class="info-item"><label>入职日期</label><span>{{ employment.hire_date }}</span></div>
-        <div class="info-item"><label>任职状态</label><span>{{ employment.employment_status }}</span></div>
-        <div class="info-item"><label>试用期状态</label><span>{{ employment.probation_status }}</span></div>
+        <div class="info-item"><label>任职状态</label><span>{{ getStatusLabel(employmentStatusMap, employment.employment_status) }}</span></div>
+        <div class="info-item"><label>试用期状态</label><span>{{ getStatusLabel(probationStatusMap, employment.probation_status) }}</span></div>
         <div class="info-item"><label>试用期结束</label><span>{{ employment.probation_end_date || '-' }}</span></div>
         <div class="info-item"><label>部门</label><span>{{ employment.department || '-' }}</span></div>
         <div class="info-item"><label>岗位</label><span>{{ employment.position || '-' }}</span></div>
@@ -63,7 +64,7 @@ onMounted(async () => {
       <div v-if="tasks.length === 0" class="empty">暂无跟进任务</div>
       <div v-for="task in tasks" :key="task.id" class="task-row">
         <span class="task-name">{{ task.task_name }}</span>
-        <span class="tag" :class="`tag-${task.followup_status.toLowerCase()}`">{{ task.followup_status }}</span>
+        <span class="tag" :class="`tag-${task.followup_status.toLowerCase()}`">{{ getStatusLabel(followupStatusMap, task.followup_status) }}</span>
         <span class="task-date">{{ task.planned_date }}</span>
         <button class="btn btn-sm" @click="router.push(`/followup-tasks/${task.id}`)">查看</button>
       </div>
@@ -74,8 +75,8 @@ onMounted(async () => {
       <button class="btn btn-primary" @click="router.push(`/communications/new?employment_id=${employmentId}`)">新建沟通</button>
       <div v-if="communications.length === 0" class="empty">暂无沟通记录</div>
       <div v-for="comm in communications" :key="comm.id" class="comm-row">
-        <span>{{ comm.communication_type || '沟通' }}</span>
-        <span class="tag">{{ comm.communication_status }}</span>
+        <span>{{ getStatusLabel(communicationTypeMap, comm.communication_type) }}</span>
+        <span class="tag">{{ getStatusLabel(communicationStatusMap, comm.communication_status) }}</span>
         <span>{{ comm.created_at?.slice(0, 10) }}</span>
         <button class="btn btn-sm" @click="router.push(`/communications/${comm.id}`)">查看</button>
       </div>

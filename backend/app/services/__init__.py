@@ -12,3 +12,7 @@ from . import probation_service
 from . import regularization_service
 from . import change_service
 from . import separation_service
+from . import roster_mapping_service
+from . import roster_import_service
+from . import hr_confirmation_service
+from . import roster_rollback_service

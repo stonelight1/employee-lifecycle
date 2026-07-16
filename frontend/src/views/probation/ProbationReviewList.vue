@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { get } from '@/api'
 import type { ProbationReviewItem } from '@/types'
+import { getStatusLabel, reviewStatusMap, reviewStageMap } from '@/constants/status'
 
 const route = useRoute()
 const router = useRouter()
@@ -56,10 +57,10 @@ onMounted(loadReviews)
             <td>#{{ r.review_seq }}</td>
             <td>
               <span class="tag" :class="r.review_stage === 'FINAL' ? 'tag-orange' : 'tag-blue'">
-                {{ r.review_stage === 'FINAL' ? '最终评估' : '过程评估' }}
+                {{ getStatusLabel(reviewStageMap, r.review_stage) }}
               </span>
             </td>
-            <td><span class="tag">{{ r.review_status || 'DRAFT' }}</span></td>
+            <td><span class="tag">{{ getStatusLabel(reviewStatusMap, r.review_status) }}</span></td>
             <td>{{ r.recommendation || '-' }}</td>
             <td>{{ r.reviewed_by || '-' }}</td>
             <td>{{ r.reviewed_at?.slice(0, 10) || '-' }}</td>

@@ -5,7 +5,7 @@ from typing import Optional
 import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column
 
-from ..enums import EmployeeStatus
+from ..enums import EmployeeStatus, ProfileCompleteness
 from .base import Base, CommonMixin
 
 
@@ -24,3 +24,17 @@ class Employee(CommonMixin, Base):
         sa.String(30), default=EmployeeStatus.ACTIVE, nullable=False
     )
     source: Mapped[Optional[str]] = mapped_column(sa.String(100))
+    profile_completeness_status: Mapped[Optional[ProfileCompleteness]] = mapped_column(
+        sa.String(20), default=ProfileCompleteness.COMPLETE
+    )
+
+    __table_args__ = (
+        sa.Index(
+            "uq_normalized_name_active",
+            "normalized_name",
+            unique=True,
+            sqlite_where=sa.text(
+                "is_deleted = 0 AND employee_status != 'ENTRY_ERROR'"
+            ),
+        ),
+    )

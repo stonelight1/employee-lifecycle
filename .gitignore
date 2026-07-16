@@ -46,3 +46,10 @@ data/*.db-shm
 # Backup
 *.backup
 *.bak
+
+# Logs
+logs/
+backend/logs/
+
+# Local data (roster imports, employee attachments, backups)
+backend/local_data/

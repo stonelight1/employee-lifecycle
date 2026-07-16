@@ -10,6 +10,7 @@ import {
   ArrowLeftRight,
   Settings,
   FileText,
+  Upload,
   ChevronLeft,
   ChevronRight,
 } from 'lucide-vue-next'
@@ -42,6 +43,7 @@ const navGroups: NavGroup[] = [
     title: '员工',
     items: [
       { path: '/employees', label: '员工中心', icon: Users },
+      { path: '/roster-imports', label: '花名册导入', icon: Upload },
       { path: '/probation', label: '试用期', icon: Timer },
       { path: '/regularizations', label: '转正管理', icon: ArrowUpCircle },
       { path: '/employee-movements', label: '异动与离职', icon: ArrowLeftRight },

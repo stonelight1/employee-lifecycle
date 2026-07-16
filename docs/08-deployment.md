@@ -1,6 +1,6 @@
 # 08 部署与环境配置
 
-> 版本：v0.4.2  
+> 版本：v0.4.3  
 > 最后更新：2026-07-16
 
 ## 1. 已确认技术栈
@@ -73,7 +73,7 @@ project-root/
 APP_ENV=development
 APP_DEBUG=true
 APP_HOST=127.0.0.1
-APP_PORT=8000
+APP_PORT=8013
 
 DATABASE_URL=sqlite:///./data/employee_lifecycle.db
 LOG_LEVEL=INFO
@@ -281,6 +281,12 @@ npm run test
 6. 验证员工、任务、沟通、文本版本和日志。
 
 ## 13. 日志和健康检查
+
+默认 `LOG_DIR=./logs` 按项目根目录解析，运行日志写入：
+
+```text
+project-root/logs/backend.log
+```
 
 日志至少包含：
 

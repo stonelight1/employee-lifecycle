@@ -6,7 +6,7 @@ import type { RegularizationItem } from '@/types'
 import { formatDate } from '@/utils/date'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
-import { getStatusLabel, employmentStatusMap, regularizationDecisionMap } from '@/constants/status'
+import { getStatusLabel, employmentStatusMap, regularizationDecisionMap, probationStatusMap } from '@/constants/status'
 import BaseModal from '@/components/base/BaseModal.vue'
 
 const route = useRoute()
@@ -117,7 +117,7 @@ onMounted(loadData)
         <div class="info-item"><label>入职日期</label><span>{{ formatDate(preview.hire_date) }}</span></div>
         <div class="info-item"><label>试用期开始</label><span>{{ formatDate(preview.probation_start_date) }}</span></div>
         <div class="info-item"><label>试用期结束</label><span>{{ formatDate(preview.probation_end_date) }}</span></div>
-        <div class="info-item"><label>试用期状态</label><span>{{ preview.probation_status || '-' }}</span></div>
+        <div class="info-item"><label>试用期状态</label><span>{{ getStatusLabel(probationStatusMap, preview.probation_status) }}</span></div>
         <div class="info-item">
           <label>最终评估</label>
           <span v-if="preview.has_completed_final_review" style="color: var(--color-success);">已完成</span>

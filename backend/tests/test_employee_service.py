@@ -12,7 +12,7 @@ from app.services.employee_service import (
     list_employees,
     delete_employee,
 )
-from app.exceptions import ResourceNotFound, ValidationError
+from app.exceptions import Conflict, ResourceNotFound, ValidationError
 
 
 class TestCreateEmployee:
@@ -34,10 +34,10 @@ class TestCreateEmployee:
             create_employee(db_session, {"name": ""}, default_user)
 
     def test_create_duplicate_name_allowed(self, db_session, default_user):
-        """允许同名员工存在"""
-        emp1 = create_employee(db_session, {"name": "同名", "employee_no": "E001"}, default_user)
-        emp2 = create_employee(db_session, {"name": "同名", "employee_no": "E002"}, default_user)
-        assert emp1["id"] != emp2["id"]
+        """同名不允许创建第二份正常档案（新业务规则）"""
+        create_employee(db_session, {"name": "同名", "employee_no": "E001"}, default_user)
+        with pytest.raises(Conflict):
+            create_employee(db_session, {"name": "同名", "employee_no": "E002"}, default_user)
 
 
 class TestListEmployees:

@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { get, post, patch } from '@/api'
 import { useToast } from '@/composables/useToast'
+import { getStatusLabel, reviewStatusMap, reviewStageMap } from '@/constants/status'
 import type { ProbationReviewItem, FollowupTaskItem, CommunicationItem } from '@/types'
 
 const route = useRoute()
@@ -141,7 +142,7 @@ onMounted(() => {
         </div>
         <div class="form-item" v-if="!isCreate">
           <label>状态</label>
-          <span class="tag">{{ review.review_status || 'DRAFT' }}</span>
+          <span class="tag">{{ getStatusLabel(reviewStatusMap, review.review_status) }}</span>
         </div>
         <div class="form-item full-width">
           <label>HR 评估内容</label>

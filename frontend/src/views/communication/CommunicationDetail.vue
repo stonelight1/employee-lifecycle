@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { get, post, put, patch } from '@/api'
 import { useToast } from '@/composables/useToast'
 import BaseModal from '@/components/base/BaseModal.vue'
+import { getStatusLabel, communicationTypeMap, riskMap } from '@/constants/status'
 import type { CommunicationItem, AiSummaryItem, RiskAssessmentItem, TextVersionItem } from '@/types'
 
 const route = useRoute()
@@ -134,7 +135,7 @@ onMounted(loadData)
     <div class="card">
       <div class="section-title">基本信息</div>
       <div class="info-grid">
-        <div class="info-item"><label>类型</label><span>{{ communication.communication_type || '-' }}</span></div>
+        <div class="info-item"><label>类型</label><span>{{ getStatusLabel(communicationTypeMap, communication.communication_type) }}</span></div>
         <div class="info-item"><label>状态</label><span>{{ statusLabels[communication.communication_status] || communication.communication_status }}</span></div>
         <div class="info-item"><label>文本版本</label><span>v{{ communication.current_text_version_no || '-' }}</span></div>
         <div class="info-item"><label>文本哈希</label><span class="hash">{{ communication.current_text_hash?.slice(0, 16) || '-' }}...</span></div>
@@ -225,13 +226,13 @@ onMounted(loadData)
             'tag-orange': currentRisk.ai_risk_level === 'MEDIUM',
             'tag-red': currentRisk.ai_risk_level === 'HIGH',
             'tag-gray': currentRisk.ai_risk_level === 'UNSPECIFIED',
-          }">AI 风险: {{ currentRisk.ai_risk_level }}</span>
+          }">AI 风险: {{ riskMap[currentRisk.ai_risk_level]?.label || currentRisk.ai_risk_level }}</span>
           <span v-if="currentRisk.hr_risk_level" class="tag" :class="{
             'tag-green': currentRisk.hr_risk_level === 'LOW',
             'tag-orange': currentRisk.hr_risk_level === 'MEDIUM',
             'tag-red': currentRisk.hr_risk_level === 'HIGH',
             'tag-gray': currentRisk.hr_risk_level === 'UNSPECIFIED',
-          }">HR 风险: {{ currentRisk.hr_risk_level }}</span>
+          }">HR 风险: {{ riskMap[currentRisk.hr_risk_level]?.label || currentRisk.hr_risk_level }}</span>
         </div>
 
         <div v-if="currentRisk.ai_risk_reasons" class="risk-detail">

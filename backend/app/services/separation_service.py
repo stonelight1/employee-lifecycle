@@ -7,6 +7,7 @@ from typing import Any, Optional
 from sqlalchemy.orm import Session as DBSession
 
 from ..enums import (
+    ChecklistItemType,
     EmploymentStatus,
     FollowupTaskStatus,
     OperationObjectType,
@@ -14,7 +15,13 @@ from ..enums import (
     TodoStatus,
 )
 from ..exceptions import InvalidStateTransition, ResourceNotFound
-from ..models import EmploymentRecord, FollowupTask, SeparationRecord, SystemTodo
+from ..models import (
+    EmploymentRecord,
+    FollowupTask,
+    SeparationChecklistItem,
+    SeparationRecord,
+    SystemTodo,
+)
 from .operation_log_service import create_log
 
 
@@ -89,6 +96,13 @@ def start_separation(
 
     # 更新任职状态
     emp.employment_status = EmploymentStatus.SEPARATING
+    if not emp.status_before_separating:
+        original_status = before.get("employment_status")
+        emp.status_before_separating = (
+            original_status.value
+            if isinstance(original_status, EmploymentStatus)
+            else str(original_status)
+        )
     emp.updated_by = operator_id
     emp.updated_at = now
 
@@ -210,6 +224,24 @@ def confirm_separation(
 
     db.flush()
 
+    # 创建离职检查清单项
+    default_titles = {
+        ChecklistItemType.SALARY: "薪资结算",
+        ChecklistItemType.SOCIAL_INSURANCE: "社保处理",
+        ChecklistItemType.HOUSING_FUND: "公积金处理",
+        ChecklistItemType.DEVICE: "设备回收",
+        ChecklistItemType.ACCOUNT: "账号注销",
+    }
+    for item_type in ChecklistItemType:
+        item = SeparationChecklistItem(
+            separation_record_id=record.id,
+            item_type=item_type,
+            title=default_titles[item_type],
+            created_by=operator_id,
+            updated_by=operator_id,
+        )
+        db.add(item)
+
     # 操作日志
     create_log(
         db=db,
@@ -219,6 +251,127 @@ def confirm_separation(
         operation_type="CONFIRM",
         before_data=json.dumps(before_emp, default=str, ensure_ascii=False),
         after_data=json.dumps(_to_dict(emp), default=str, ensure_ascii=False),
+        business_id=emp.id,
+    )
+
+    db.flush()
+    return _to_dict(record)
+
+
+def cancel_separation(
+    db: DBSession,
+    employment_id: int,
+    data: dict[str, Any],
+    operator: dict[str, str],
+) -> dict[str, Any]:
+    """取消离职流程，恢复任职状态。"""
+    emp = _get_employment(db, employment_id)
+
+    if emp.employment_status != EmploymentStatus.SEPARATING:
+        raise InvalidStateTransition("当前任职状态不允许取消离职，请先确认是否已启动离职流程")
+
+    reason = data.get("reason")
+    if not reason:
+        raise ValueError("取消离职必须提供原因")
+
+    now = datetime.now()
+    operator_id = operator.get("user_id", "system")
+    before = _to_dict(emp)
+
+    # 恢复离职前状态
+    restored_status = emp.status_before_separating or EmploymentStatus.ACTIVE.value
+    emp.employment_status = EmploymentStatus(restored_status)
+    emp.updated_by = operator_id
+    emp.updated_at = now
+
+    # 取消未确认的离职记录（软删除）
+    pending_records = db.query(SeparationRecord).filter(
+        SeparationRecord.employment_id == employment_id,
+        SeparationRecord.confirmed_at.is_(None),
+        SeparationRecord.is_deleted == False,
+    ).all()
+    for record in pending_records:
+        record.is_deleted = True
+        record.updated_by = operator_id
+        record.updated_at = now
+
+    db.flush()
+
+    # 操作日志
+    create_log(
+        db=db,
+        operator_id=operator_id,
+        object_type=OperationObjectType.SEPARATION.value,
+        object_id=str(employment_id),
+        operation_type="CANCEL",
+        before_data=json.dumps(before, default=str, ensure_ascii=False),
+        after_data=json.dumps(_to_dict(emp), default=str, ensure_ascii=False),
+        business_id=emp.id,
+    )
+
+    db.flush()
+    return _to_dict(emp)
+
+
+def correct_separation_date(
+    db: DBSession,
+    employment_id: int,
+    data: dict[str, Any],
+    operator: dict[str, str],
+) -> dict[str, Any]:
+    """更正离职日期。"""
+    emp = _get_employment(db, employment_id)
+
+    if emp.employment_status != EmploymentStatus.SEPARATED:
+        raise InvalidStateTransition("员工未离职，无法更正离职日期")
+
+    reason = data.get("reason")
+    if not reason:
+        raise ValueError("更正离职日期必须提供原因")
+
+    confirmed = data.get("confirmed")
+    if not confirmed:
+        raise ValueError("更正离职日期需要确认操作")
+
+    # 查找已确认的离职记录（取最新一条）
+    record = db.query(SeparationRecord).filter(
+        SeparationRecord.employment_id == employment_id,
+        SeparationRecord.confirmed_at.isnot(None),
+        SeparationRecord.is_deleted == False,
+    ).order_by(SeparationRecord.confirmed_at.desc()).first()
+
+    if not record:
+        raise ResourceNotFound("未找到已确认的离职记录")
+
+    new_date = data.get("actual_separation_date")
+    if not new_date:
+        raise ValueError("必须提供新的实际离职日期")
+
+    now = datetime.now()
+    operator_id = operator.get("user_id", "system")
+    before_record = _to_dict(record)
+
+    # 更新离职记录的日期
+    record.actual_separation_date = new_date
+    record.updated_by = operator_id
+    record.updated_at = now
+
+    # 同步更新任职记录上的离职日期
+    emp.separation_date = new_date
+    emp.updated_by = operator_id
+    emp.updated_at = now
+
+    db.flush()
+
+    # 操作日志
+    create_log(
+        db=db,
+        operator_id=operator_id,
+        object_type=OperationObjectType.SEPARATION.value,
+        object_id=str(record.id),
+        operation_type="CORRECT_DATE",
+        before_data=json.dumps(before_record, default=str, ensure_ascii=False),
+        after_data=json.dumps(_to_dict(record), default=str, ensure_ascii=False),
         business_id=emp.id,
     )
 

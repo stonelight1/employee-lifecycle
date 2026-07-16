@@ -15,7 +15,7 @@ from app.services.regularization_service import (
     confirm_regularization,
     preview_regularization,
 )
-from app.exceptions import FinalProbationReviewRequired
+from app.exceptions import InvalidStateTransition
 
 
 def _make_emp(db, user, name="测试", emp_no="P001"):
@@ -74,11 +74,15 @@ class TestRegularization:
         preview = preview_regularization(db_session, record["id"])
         assert preview["employment_id"] == record["id"]
 
-    def test_missing_final_review(self, db_session, default_user):
-        """REG-001 缺少最终评估拒绝转正"""
-        record = _make_emp(db_session, default_user, "无评估", "R002")
-        with pytest.raises(FinalProbationReviewRequired):
-            confirm_regularization(db_session, record["id"], {"decision": "APPROVED"}, default_user)
+    def test_extend_decision_rejected(self, db_session, default_user):
+        """EXTENDED 决策被拒绝"""
+        record = _make_emp(db_session, default_user, "拒绝延期", "R002")
+        with pytest.raises(InvalidStateTransition):
+            confirm_regularization(
+                db_session, record["id"],
+                {"decision": "EXTENDED", "new_probation_end_date": date(2027, 1, 1)},
+                default_user,
+            )
 
     def test_approve_regularization(self, db_session, default_user):
         """REG-002 正常转正"""
@@ -95,23 +99,17 @@ class TestRegularization:
         )
         assert result["decision"] == "APPROVED"
 
-    def test_extend_probation(self, db_session, default_user):
-        """REG-003 延期"""
-        record = _make_emp(db_session, default_user, "延期", "R004")
-        review = create_review(
-            db_session,
-            {"employment_id": record["id"], "review_stage": "FINAL", "review_status": "COMPLETED"},
-            default_user,
-        )
-        complete_review(db_session, review["id"], {"review_status": "COMPLETED"}, default_user)
+    def test_extend_probation_rejected(self, db_session, default_user):
+        """REG-003 EXTENDED 被拒绝"""
+        record = _make_emp(db_session, default_user, "延期拒绝", "R004")
 
-        result = confirm_regularization(
-            db_session,
-            record["id"],
-            {"decision": "EXTENDED", "new_probation_end_date": date(2027, 1, 1), "decision_reason": "继续观察"},
-            default_user,
-        )
-        assert result["decision"] == "EXTENDED"
+        with pytest.raises(InvalidStateTransition):
+            confirm_regularization(
+                db_session,
+                record["id"],
+                {"decision": "EXTENDED", "new_probation_end_date": date(2027, 1, 1), "decision_reason": "继续观察"},
+                default_user,
+            )
 
     def test_not_approved_no_auto_separation(self, db_session, default_user):
         """REG-004 未通过不自动离职"""

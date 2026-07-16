@@ -3,7 +3,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { get } from '@/api'
 import type { FollowupTaskItem } from '@/types'
-import { getStatusLabel, followupStatusMap } from '@/constants/status'
+import { getStatusLabel, followupStatusMap, confirmationModeMap } from '@/constants/status'
 import { formatDate } from '@/utils/date'
 
 const router = useRouter()
@@ -45,7 +45,7 @@ onMounted(async () => {
             <td><span class="task-name">{{ task.task_name }}</span></td>
             <td>{{ formatDate(task.planned_date) }}</td>
             <td><span class="tag-status">{{ getStatusLabel(followupStatusMap, task.followup_status) }}</span></td>
-            <td>{{ task.confirmation_mode }}</td>
+            <td>{{ getStatusLabel(confirmationModeMap, task.confirmation_mode) }}</td>
             <td>
               <button class="table-btn" @click="router.push(`/followup-tasks/${task.id}`)">查看</button>
             </td>

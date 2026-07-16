@@ -1,4 +1,65 @@
-// API 响应通用类型
+// 风险对象（列表聚合返回）
+export interface RiskInfo {
+  level: string | null
+  reason: string | null
+  assessed_at: string | null
+}
+
+// 任职摘要（列表聚合返回）
+export interface EmploymentSummary {
+  id: number
+  department?: string | null
+  position?: string | null
+  team_name?: string | null
+  employment_status: string
+  hire_date?: string | null
+  expected_hire_date?: string | null
+  actual_hire_date?: string | null
+  probation_status: string
+  probation_start_date?: string | null
+  probation_end_date?: string | null
+  expected_regularization_date?: string | null
+  actual_regularization_date?: string | null
+  actual_separation_date?: string | null
+}
+
+// 下一事项（列表聚合返回）
+export interface NextActionInfo {
+  id: number
+  source_type: string
+  title: string
+  due_at: string | null
+  status: string
+  days_until_due: number | null
+  overdue_days: number
+}
+
+// 员工列表聚合项（后端 list_employees 统一返回）
+export interface EmployeeListItem {
+  id: number
+  name: string
+  employee_no?: string | null
+  mobile?: string | null
+  email?: string | null
+  gender?: string | null
+  birth_date?: string | null
+  employee_status: string
+  lifecycle_stage: string
+  current_employment: EmploymentSummary | null
+  probation_progress: number | null
+  risk: RiskInfo
+  next_action: NextActionInfo | null
+  identity_card?: string | null
+  signing_company?: string | null
+}
+
+// 员工列表分页响应
+export interface EmployeeListData {
+  items: EmployeeListItem[]
+  total: number
+  page: number
+  page_size: number
+}
 export interface ApiResponse<T = any> {
   success: boolean
   data?: T

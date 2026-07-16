@@ -3,7 +3,7 @@ import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { get, post } from '@/api'
 import type { FollowupTaskItem } from '@/types'
-import { getStatusLabel, followupStatusMap } from '@/constants/status'
+import { getStatusLabel, followupStatusMap, confirmationModeMap } from '@/constants/status'
 import { formatDate } from '@/utils/date'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
@@ -92,7 +92,7 @@ async function cancelTask() {
 
       <div class="info-grid">
         <div class="info-item"><label>计划日期</label><span>{{ formatDate(task.planned_date) }}</span></div>
-        <div class="info-item"><label>确认模式</label><span>{{ task.confirmation_mode }}</span></div>
+        <div class="info-item"><label>确认模式</label><span>{{ getStatusLabel(confirmationModeMap, task.confirmation_mode) }}</span></div>
         <div class="info-item"><label>节点快照</label><span>{{ task.node_code_snapshot || '-' }}</span></div>
         <div class="info-item"><label>偏移天数</label><span>{{ task.offset_days_snapshot ?? '-' }}</span></div>
       </div>

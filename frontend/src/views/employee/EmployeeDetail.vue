@@ -1,12 +1,33 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { get, post, patch, del as delReq } from '@/api'
 import type { EmployeeItem, EmploymentItem } from '@/types'
-import { formatDate, formatTenure } from '@/utils/date'
+import type { FullProfile } from '@/types/employee-profile'
+import { formatDate, formatTenure, formatDateTime } from '@/utils/date'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { resolveLifecycleStage, isInProbation, pickCurrentEmployment } from '@/utils/lifecycle'
+import {
+  getStatusLabel,
+  employeeStatusMap,
+  probationStatusMap,
+  employmentStatusMap,
+  contractTypeMap,
+  contractStatusMap,
+  accountTypeMap,
+  accountStatusMap,
+  salaryTypeMap,
+  assessmentTypeMap,
+  genderMap,
+  householdTypeMap,
+  educationLevelMap,
+  workModeMap,
+  employmentTypeMap,
+  socialInsuranceStatusMap,
+  housingFundStatusMap,
+  benefitPolicyMap,
+} from '@/constants/status'
 import EmployeeAvatar from '@/components/business/EmployeeAvatar.vue'
 import LifecycleBadge from '@/components/business/LifecycleBadge.vue'
 import LifecycleStepper from '@/components/business/LifecycleStepper.vue'
@@ -14,6 +35,20 @@ import NextActionCard from '@/components/business/NextActionCard.vue'
 import EmployeeTimeline from '@/components/business/EmployeeTimeline.vue'
 import ProbationProgress from '@/components/business/ProbationProgress.vue'
 import BaseModal from '@/components/base/BaseModal.vue'
+import BaseBadge from '@/components/base/BaseBadge.vue'
+import {
+  User,
+  MapPin,
+  GraduationCap,
+  Briefcase,
+  FileText,
+  Banknote,
+  CreditCard,
+  Shield,
+  Brain,
+  StickyNote,
+  History,
+} from 'lucide-vue-next'
 
 const route = useRoute()
 const router = useRouter()
@@ -30,6 +65,10 @@ const timelineError = ref('')
 const timelineLoading = ref(false)
 const loading = ref(true)
 const activeTab = ref('overview')
+
+const fullProfile = ref<FullProfile | null>(null)
+const fullProfileLoading = ref(false)
+const fullProfileError = ref('')
 
 async function loadData() {
   loading.value = true
@@ -210,6 +249,72 @@ function handleDelete() {
   })
 }
 
+function maskIdCard(value?: string | null): string {
+  if (!value) return '—'
+  if (value.length < 8) return value
+  return value.slice(0, 4) + '****' + value.slice(-4)
+}
+
+function maskAccountNo(value?: string | null): string {
+  if (!value) return '—'
+  if (value.length <= 4) return value
+  return '****' + value.slice(-4)
+}
+
+const emp = computed(() => fullProfile.value?.current_employment as Record<string, any> | null | undefined)
+const profile = computed(() => fullProfile.value?.profile ?? null)
+
+async function loadFullProfile() {
+  fullProfileLoading.value = true
+  fullProfileError.value = ''
+  try {
+    const res = await get<FullProfile>(`/employees/${employeeId}/full-profile`)
+    if (res.success && res.data) {
+      fullProfile.value = res.data
+    } else {
+      fullProfileError.value = '完整资料加载失败'
+    }
+  } catch {
+    // Fallback: load individual endpoints
+    try {
+      const [profileRes, contractsRes, accountsRes, compensationsRes, assessmentsRes, notesRes, historyRes] =
+        await Promise.all([
+          get<any>(`/employees/${employeeId}/profile`).catch(() => ({ data: null })),
+          get<any>(`/employees/${employeeId}/contracts`).catch(() => ({ data: [] })),
+          get<any>(`/employees/${employeeId}/financial-accounts`).catch(() => ({ data: [] })),
+          get<any>(`/employees/${employeeId}/compensations`).catch(() => ({ data: [] })),
+          get<any>(`/employees/${employeeId}/assessments`).catch(() => ({ data: [] })),
+          get<any>(`/employees/${employeeId}/notes`).catch(() => ({ data: [] })),
+          get<any>(`/employees/${employeeId}/attribute-history`).catch(() => ({ data: [] })),
+        ])
+
+      fullProfile.value = {
+        employee: employee.value as any,
+        profile: profileRes.data?.profile ?? null,
+        current_employment: currentEmployment.value as any,
+        all_employments: employments.value as any,
+        contracts: contractsRes.data?.items ?? contractsRes.data ?? [],
+        financial_accounts: accountsRes.data?.items ?? accountsRes.data ?? [],
+        compensations: compensationsRes.data?.items ?? compensationsRes.data ?? [],
+        assessments: assessmentsRes.data?.items ?? assessmentsRes.data ?? [],
+        notes: notesRes.data?.items ?? notesRes.data ?? [],
+        attribute_history: historyRes.data?.items ?? historyRes.data ?? [],
+      }
+      fullProfileError.value = ''
+    } catch (e2) {
+      fullProfileError.value = '资料加载失败'
+    }
+  } finally {
+    fullProfileLoading.value = false
+  }
+}
+
+watch(activeTab, (tab) => {
+  if (tab === 'full-profile' && !fullProfile.value && !fullProfileLoading.value) {
+    void loadFullProfile()
+  }
+})
+
 onMounted(loadData)
 </script>
 
@@ -285,6 +390,7 @@ onMounted(loadData)
       <!-- Tabs -->
       <div class="tabs-bar">
         <button class="tab-btn" :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">概览</button>
+        <button class="tab-btn" :class="{ active: activeTab === 'full-profile' }" @click="activeTab = 'full-profile'">完整资料</button>
         <button class="tab-btn" :class="{ active: activeTab === 'employment' }" @click="activeTab = 'employment'">任职经历</button>
         <button class="tab-btn" :class="{ active: activeTab === 'probation' }" @click="activeTab = 'probation'" v-if="isInProbation(currentEmployment)">跟进与评估</button>
         <button class="tab-btn" :class="{ active: activeTab === 'changes' }" @click="activeTab = 'changes'">异动与离职</button>
@@ -349,6 +455,228 @@ onMounted(loadData)
             />
           </div>
         </div>
+      </div>
+
+      <!-- Full Profile tab -->
+      <div v-if="activeTab === 'full-profile'" class="full-profile">
+        <div v-if="fullProfileLoading" class="loading-state text-tertiary">加载中...</div>
+        <div v-else-if="fullProfileError" class="error-state text-danger">{{ fullProfileError }}</div>
+        <template v-else-if="fullProfile">
+          <!-- 1. 基本信息 -->
+          <div class="profile-card card">
+            <div class="profile-card-header">
+              <User :size="16" />
+              <span>基本信息</span>
+            </div>
+            <div class="profile-grid">
+              <div class="profile-field"><label>姓名</label><span>{{ employee.name }}</span></div>
+              <div class="profile-field"><label>员工编号</label><span>{{ employee.employee_no || '—' }}</span></div>
+              <div class="profile-field"><label>员工状态</label><span><LifecycleBadge :status="lifecycleStatus" /></span></div>
+              <div class="profile-field"><label>来源</label><span>{{ employee.source || '—' }}</span></div>
+            </div>
+          </div>
+
+          <!-- 2. 身份与联系方式 -->
+          <div class="profile-card card">
+            <div class="profile-card-header">
+              <User :size="16" />
+              <span>身份与联系方式</span>
+            </div>
+            <div class="profile-grid">
+              <div class="profile-field"><label>手机号</label><span>{{ employee.mobile || '—' }}</span></div>
+              <div class="profile-field"><label>邮箱</label><span>{{ employee.email || '—' }}</span></div>
+              <div class="profile-field"><label>身份证号</label><span>{{ maskIdCard(profile?.identity_card) }}</span></div>
+              <div class="profile-field"><label>性别</label><span>{{ getStatusLabel(genderMap, profile?.gender) }}</span></div>
+              <div class="profile-field"><label>出生日期</label><span>{{ formatDate(profile?.birth_date) }}</span></div>
+            </div>
+          </div>
+
+          <!-- 3. 户籍与地址 -->
+          <div class="profile-card card">
+            <div class="profile-card-header">
+              <MapPin :size="16" />
+              <span>户籍与地址</span>
+            </div>
+            <div class="profile-grid">
+              <div class="profile-field"><label>户籍</label><span>{{ profile?.household_registration || '—' }}</span></div>
+              <div class="profile-field"><label>居住地址</label><span>{{ profile?.residence_address || '—' }}</span></div>
+              <div class="profile-field"><label>户口类型</label><span>{{ getStatusLabel(householdTypeMap, profile?.household_type) }}</span></div>
+            </div>
+          </div>
+
+          <!-- 4. 教育信息 -->
+          <div class="profile-card card">
+            <div class="profile-card-header">
+              <GraduationCap :size="16" />
+              <span>教育信息</span>
+            </div>
+            <div class="profile-grid">
+              <div class="profile-field"><label>学历</label><span>{{ getStatusLabel(educationLevelMap, profile?.education_level) }}</span></div>
+              <div class="profile-field"><label>毕业院校</label><span>{{ profile?.graduation_school || '—' }}</span></div>
+              <div class="profile-field"><label>专业</label><span>{{ profile?.major || '—' }}</span></div>
+            </div>
+          </div>
+
+          <!-- 5. 当前任职 -->
+          <div class="profile-card card">
+            <div class="profile-card-header">
+              <Briefcase :size="16" />
+              <span>当前任职</span>
+            </div>
+            <div v-if="emp" class="profile-grid">
+              <div class="profile-field"><label>部门</label><span>{{ emp.department || '—' }}</span></div>
+              <div class="profile-field"><label>岗位</label><span>{{ emp.position || '—' }}</span></div>
+              <div class="profile-field"><label>直属负责人</label><span>{{ emp.manager_name || '—' }}</span></div>
+              <div class="profile-field"><label>分队</label><span>{{ emp.team_name || '—' }}</span></div>
+              <div class="profile-field"><label>工作城市</label><span>{{ emp.work_city || '—' }}</span></div>
+              <div class="profile-field"><label>办公方式</label><span>{{ getStatusLabel(workModeMap, emp.work_mode) }}</span></div>
+              <div class="profile-field"><label>员工类型</label><span>{{ getStatusLabel(employmentTypeMap, emp.employment_type) }}</span></div>
+              <div class="profile-field"><label>试用期</label><span>{{ emp.probation_months ? `${emp.probation_months} 个月` : '—' }}</span></div>
+              <div class="profile-field"><label>试用期状态</label><span>{{ getStatusLabel(probationStatusMap, emp.probation_status) }}</span></div>
+              <div class="profile-field"><label>预计入职日期</label><span>{{ formatDate(emp.expected_hire_date || emp.hire_date) }}</span></div>
+              <div class="profile-field"><label>实际入职日期</label><span>{{ formatDate(emp.hire_date) }}</span></div>
+              <div class="profile-field"><label>预计转正日期</label><span>{{ formatDate(emp.expected_regularization_date || emp.probation_end_date) }}</span></div>
+              <div class="profile-field"><label>实际转正日期</label><span>{{ formatDate(emp.regularization_date) }}</span></div>
+              <div class="profile-field"><label>雇佣状态</label><span>{{ getStatusLabel(employmentStatusMap, emp.employment_status) }}</span></div>
+            </div>
+            <div v-else class="text-sm text-tertiary">暂无当前任职记录</div>
+          </div>
+
+          <!-- 6. 合同 -->
+          <div class="profile-card card">
+            <div class="profile-card-header">
+              <FileText :size="16" />
+              <span>合同</span>
+            </div>
+            <div v-if="fullProfile.contracts && fullProfile.contracts.length > 0">
+              <div v-for="contract in fullProfile.contracts" :key="contract.id" class="list-item">
+                <div class="list-item-grid">
+                  <div class="profile-field"><label>签订公司</label><span>{{ contract.signing_company || '—' }}</span></div>
+                  <div class="profile-field"><label>合同类型</label><span>{{ getStatusLabel(contractTypeMap, contract.contract_type) }}</span></div>
+                  <div class="profile-field"><label>开始日期</label><span>{{ formatDate(contract.start_date) }}</span></div>
+                  <div class="profile-field"><label>到期日期</label><span>{{ formatDate(contract.end_date) }}</span></div>
+                  <div class="profile-field"><label>签订次数</label><span>{{ contract.signing_sequence ?? '—' }}</span></div>
+                  <div class="profile-field"><label>合同状态</label><span><BaseBadge :label="getStatusLabel(contractStatusMap, contract.contract_status)" size="sm" /></span></div>
+                </div>
+              </div>
+            </div>
+            <div v-else class="text-sm text-tertiary">暂无合同记录</div>
+          </div>
+
+          <!-- 7. 薪酬 -->
+          <div class="profile-card card">
+            <div class="profile-card-header">
+              <Banknote :size="16" />
+              <span>薪酬</span>
+            </div>
+            <div v-if="fullProfile.compensations && fullProfile.compensations.length > 0">
+              <div v-for="comp in fullProfile.compensations.slice(0, 1)" :key="comp.id" class="profile-grid">
+                <div class="profile-field"><label>薪资原文</label><span>{{ comp.raw_salary_text || '—' }}</span></div>
+                <div class="profile-field"><label>类型</label><span>{{ getStatusLabel(salaryTypeMap, comp.salary_type) }}</span></div>
+                <div class="profile-field"><label>底薪</label><span>{{ comp.base_salary != null ? `${comp.base_salary} 元` : '—' }}</span></div>
+                <div class="profile-field"><label>试用期薪资</label><span>{{ comp.probation_salary != null ? `${comp.probation_salary} 元` : '—' }}</span></div>
+                <div class="profile-field"><label>转正薪资</label><span>{{ comp.regular_salary != null ? `${comp.regular_salary} 元` : '—' }}</span></div>
+              </div>
+            </div>
+            <div v-else class="text-sm text-tertiary">暂无薪酬记录</div>
+          </div>
+
+          <!-- 8. 银行卡与支付宝 -->
+          <div class="profile-card card">
+            <div class="profile-card-header">
+              <CreditCard :size="16" />
+              <span>银行卡与支付宝</span>
+            </div>
+            <div v-if="fullProfile.financial_accounts && fullProfile.financial_accounts.length > 0">
+              <div v-for="account in fullProfile.financial_accounts" :key="account.id" class="list-item">
+                <div class="list-item-grid">
+                  <div class="profile-field"><label>类型</label><span>{{ getStatusLabel(accountTypeMap, account.account_type) }}</span></div>
+                  <div class="profile-field"><label>账号</label><span>{{ maskAccountNo(account.account_no) }}</span></div>
+                  <div class="profile-field"><label>开户行</label><span>{{ account.bank_name || '—' }}</span></div>
+                  <div class="profile-field"><label>主要账号</label><span>{{ account.is_primary ? '是' : '否' }}</span></div>
+                  <div class="profile-field"><label>状态</label><span>{{ getStatusLabel(accountStatusMap, account.account_status) }}</span></div>
+                </div>
+              </div>
+            </div>
+            <div v-else class="text-sm text-tertiary">暂无银行卡或支付宝记录</div>
+          </div>
+
+          <!-- 9. 社保与公积金 -->
+          <div class="profile-card card">
+            <div class="profile-card-header">
+              <Shield :size="16" />
+              <span>社保与公积金</span>
+            </div>
+            <div class="profile-grid">
+              <div class="profile-field"><label>社保状态</label><span>{{ getStatusLabel(socialInsuranceStatusMap, profile?.social_insurance_status) }}</span></div>
+              <div class="profile-field"><label>社保规则</label><span>{{ getStatusLabel(benefitPolicyMap, profile?.social_insurance_policy) }}</span></div>
+              <div class="profile-field"><label>社保开始日期</label><span>{{ formatDate(profile?.social_insurance_start_date) }}</span></div>
+              <div class="profile-field"><label>公积金状态</label><span>{{ getStatusLabel(housingFundStatusMap, profile?.housing_fund_status) }}</span></div>
+              <div class="profile-field"><label>公积金规则</label><span>{{ getStatusLabel(benefitPolicyMap, profile?.housing_fund_policy) }}</span></div>
+              <div class="profile-field"><label>公积金开始日期</label><span>{{ formatDate(profile?.housing_fund_start_date) }}</span></div>
+              <div class="profile-field"><label>花名册原文</label><span>{{ profile?.benefit_raw_text || '—' }}</span></div>
+            </div>
+          </div>
+
+          <!-- 10. MBTI / PDP -->
+          <div class="profile-card card">
+            <div class="profile-card-header">
+              <Brain :size="16" />
+              <span>MBTI / PDP</span>
+            </div>
+            <div v-if="fullProfile.assessments && fullProfile.assessments.length > 0">
+              <div v-for="assessment in fullProfile.assessments" :key="assessment.id" class="list-item">
+                <div class="list-item-grid">
+                  <div class="profile-field"><label>测评类型</label><span>{{ getStatusLabel(assessmentTypeMap, assessment.assessment_type) }}</span></div>
+                  <div class="profile-field"><label>结果</label><span>{{ assessment.result_text || '—' }}</span></div>
+                  <div class="profile-field"><label>测评日期</label><span>{{ formatDate(assessment.assessment_date) }}</span></div>
+                </div>
+              </div>
+            </div>
+            <div v-else class="text-sm text-tertiary">暂无测评记录</div>
+          </div>
+
+          <!-- 11. 备注 -->
+          <div class="profile-card card">
+            <div class="profile-card-header">
+              <StickyNote :size="16" />
+              <span>备注</span>
+            </div>
+            <div v-if="fullProfile.notes && fullProfile.notes.length > 0">
+              <div v-for="note in fullProfile.notes" :key="note.id" class="note-item">
+                <div class="note-content">{{ note.content }}</div>
+                <div class="note-meta">{{ formatDateTime(note.created_at) }}</div>
+              </div>
+            </div>
+            <div v-else class="text-sm text-tertiary">暂无备注</div>
+          </div>
+
+          <!-- 12. 资料变更历史 -->
+          <div class="profile-card card">
+            <div class="profile-card-header">
+              <History :size="16" />
+              <span>资料变更历史</span>
+            </div>
+            <div v-if="fullProfile.attribute_history && fullProfile.attribute_history.length > 0">
+              <div v-for="item in fullProfile.attribute_history" :key="item.id" class="history-item">
+                <div class="history-dot"></div>
+                <div class="history-body">
+                  <div class="history-field">{{ item.field_name }}</div>
+                  <div class="history-change">
+                    <span class="history-old">{{ item.before_value ?? '空' }}</span>
+                    <span class="history-arrow">→</span>
+                    <span class="history-new">{{ item.after_value ?? '空' }}</span>
+                  </div>
+                  <div class="history-meta">
+                    <span>{{ formatDateTime(item.created_at) }}</span>
+                    <span v-if="item.source_type" class="history-source">{{ item.source_type }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div v-else class="text-sm text-tertiary">暂无变更记录</div>
+          </div>
+        </template>
       </div>
 
       <!-- Employment tab -->
@@ -572,8 +900,132 @@ onMounted(loadData)
   background: var(--color-bg);
 }
 
+/* Full Profile */
+.full-profile {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.profile-card {
+  padding: 20px;
+}
+.profile-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+.profile-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 24px;
+}
+.profile-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.profile-field label {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+}
+.profile-field span {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+}
+.list-item {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.list-item:last-child {
+  border-bottom: none;
+}
+.list-item-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 24px;
+}
+.note-item {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.note-item:last-child {
+  border-bottom: none;
+}
+.note-content {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+  margin-bottom: 4px;
+  line-height: 1.5;
+}
+.note-meta {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+}
+.history-item {
+  display: flex;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.history-item:last-child {
+  border-bottom: none;
+}
+.history-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  flex-shrink: 0;
+  margin-top: 5px;
+}
+.history-body {
+  flex: 1;
+}
+.history-field {
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--color-text-primary);
+  margin-bottom: 2px;
+}
+.history-change {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  margin-bottom: 2px;
+}
+.history-old {
+  color: var(--color-text-tertiary);
+  text-decoration: line-through;
+}
+.history-arrow {
+  margin: 0 6px;
+  color: var(--color-text-tertiary);
+}
+.history-new {
+  color: var(--color-primary);
+  font-weight: 500;
+}
+.history-meta {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  display: flex;
+  gap: 8px;
+}
+.history-source {
+  color: var(--color-text-tertiary);
+}
+
 @media (max-width: 1024px) {
   .detail-columns {
+    grid-template-columns: 1fr;
+  }
+  .profile-grid,
+  .list-item-grid {
     grid-template-columns: 1fr;
   }
 }

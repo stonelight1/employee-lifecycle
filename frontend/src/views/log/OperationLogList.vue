@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { get } from '@/api'
 import type { LogItem } from '@/types'
 import { formatDateTime } from '@/utils/date'
+import { getStatusLabel, operationObjectTypeMap } from '@/constants/status'
 
 const logs = ref<LogItem[]>([])
 const loading = ref(false)
@@ -46,8 +47,8 @@ onMounted(async () => {
           <tr v-for="log in logs" :key="log.id">
             <td>{{ log.operator_id }}</td>
             <td>{{ formatDateTime(log.operated_at) }}</td>
-            <td>{{ log.object_type }}</td>
-            <td><code class="code-tag">{{ log.operation_type }}</code></td>
+            <td>{{ getStatusLabel(operationObjectTypeMap, log.object_type) }}</td>
+            <td>{{ log.operation_type }}</td>
             <td>{{ log.operation_source || '-' }}</td>
           </tr>
         </tbody>

@@ -116,10 +116,167 @@ export const reviewStageMap: Record<string, string> = {
   FINAL: '最终评估',
 }
 
+// 合同类型映射
+export const contractTypeMap: Record<string, string> = {
+  FIXED_TERM: '固定期限',
+  INDEFINITE: '无固定期限',
+  UNKNOWN: '未知',
+}
+
+// 合同状态映射
+export const contractStatusMap: Record<string, string> = {
+  ACTIVE: '有效',
+  EXPIRED: '已到期',
+  TERMINATED: '已终止',
+}
+
+// 账户类型映射
+export const accountTypeMap: Record<string, string> = {
+  BANK: '银行卡',
+  ALIPAY: '支付宝',
+}
+
+// 账户状态映射
+export const accountStatusMap: Record<string, string> = {
+  ACTIVE: '有效',
+  INACTIVE: '无效',
+}
+
+// 薪资类型映射
+export const salaryTypeMap: Record<string, string> = {
+  MONTHLY: '月薪',
+  DAILY: '日薪',
+  MIXED: '混合',
+  UNKNOWN: '未知',
+}
+
+// 评估类型映射
+export const assessmentTypeMap: Record<string, string> = {
+  MBTI: 'MBTI',
+  PDP: 'PDP',
+}
+
+// 性别映射
+export const genderMap: Record<string, string> = {
+  MALE: '男',
+  FEMALE: '女',
+}
+
+// 户口类型映射
+export const householdTypeMap: Record<string, string> = {
+  URBAN: '城镇',
+  RURAL: '农村',
+  OTHER: '其他',
+}
+
+// 学历映射
+export const educationLevelMap: Record<string, string> = {
+  DOCTORATE: '博士',
+  MASTER: '硕士',
+  BACHELOR: '本科',
+  COLLEGE: '大专',
+  HIGH_SCHOOL: '高中',
+  JUNIOR_HIGH: '初中',
+  OTHER: '其他',
+}
+
+// 办公方式映射
+export const workModeMap: Record<string, string> = {
+  ON_SITE: '现场办公',
+  REMOTE: '远程办公',
+  HYBRID: '混合办公',
+  OTHER: '其他',
+}
+
+// 员工类型映射
+export const employmentTypeMap: Record<string, string> = {
+  FULL_TIME: '全职',
+  PART_TIME: '兼职',
+  CONTRACTOR: '外包',
+  INTERN: '实习',
+  OTHER: '其他',
+}
+
+// 社保状态映射
+export const socialInsuranceStatusMap: Record<string, string> = {
+  ACTIVE: '正常缴纳',
+  PENDING: '待缴纳',
+  NOT_PROVIDED: '不缴纳',
+  UNKNOWN: '无法判断',
+  INACTIVE: '未缴纳',
+  SUSPENDED: '暂停缴纳',
+}
+
+// 公积金状态映射
+export const housingFundStatusMap: Record<string, string> = {
+  ACTIVE: '正常缴纳',
+  PENDING: '待缴纳',
+  NOT_PROVIDED: '不缴纳',
+  UNKNOWN: '无法判断',
+  INACTIVE: '未缴纳',
+  SUSPENDED: '暂停缴纳',
+}
+
+export const benefitPolicyMap: Record<string, string> = {
+  FROM_HIRE_DATE: '从入职日开始',
+  FROM_REGULARIZATION_DATE: '从转正日开始',
+  NOT_PROVIDED: '不缴纳',
+  UNKNOWN: '无法判断',
+}
+
+// 操作日志对象类型映射
+export const operationObjectTypeMap: Record<string, string> = {
+  EMPLOYEE: '员工',
+  EMPLOYMENT: '任职',
+  FOLLOWUP_NODE: '跟进节点',
+  FOLLOWUP_TASK: '跟进任务',
+  COMMUNICATION: '沟通记录',
+  AI_SUMMARY: 'AI 总结',
+  RISK_ASSESSMENT: '风险评估',
+  PROBATION_REVIEW: '试用期评估',
+  REGULARIZATION: '转正',
+  EMPLOYMENT_CHANGE: '异动',
+  SEPARATION: '离职',
+  TODO: '待办',
+  ROSTER_IMPORT: '花名册导入',
+  ROSTER_ISSUE: '花名册问题',
+  HR_CONFIRMATION: 'HR 确认',
+  EMPLOYEE_PROFILE: '员工资料',
+  CONTRACT: '合同',
+  FINANCIAL_ACCOUNT: '财务账户',
+  COMPENSATION: '薪酬',
+  ASSESSMENT: '测评',
+  NOTE: '备注',
+  ATTRIBUTE_HISTORY: '属性变更历史',
+  SEPARATION_CHECKLIST: '离职清单',
+  ORGANIZATION_REFERENCE: '组织参考',
+}
+
+// 沟通类型映射
+export const communicationTypeMap: Record<string, string> = {
+  PROBATION_FOLLOWUP: '试用期跟进',
+  REGULARIZATION_INTERVIEW: '转正面谈',
+  SEPARATION_TALK: '离职面谈',
+  ONBOARDING: '入职沟通',
+  GENERAL: '一般沟通',
+}
+
+// 任务来源映射
+export const taskSourceMap: Record<string, string> = {
+  AUTO: '系统自动',
+  MANUAL: '手动创建',
+}
+
+// 试用期评估状态映射
+export const reviewStatusMap: Record<string, string> = {
+  DRAFT: '草稿',
+  COMPLETED: '已完成',
+}
+
 // 通用状态获取函数
 export function getStatusLabel(
   map: Record<string, string>,
-  value?: string,
+  value?: string | null,
 ): string {
   if (!value) return '—'
   return map[value] ?? value
@@ -128,7 +285,7 @@ export function getStatusLabel(
 // 开发环境警告
 export function getStatusLabelWithWarning(
   map: Record<string, string>,
-  value?: string,
+  value?: string | null,
 ): string {
   if (!value) return '—'
   const label = map[value]

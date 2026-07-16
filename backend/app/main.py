@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import logging
+import time
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .config import settings
+from .logging_config import setup_logging
+
+# 初始化日志（在创建 app 之前，确保启动阶段的日志被捕获）
+setup_logging()
+logger = logging.getLogger(__name__)
+
 from .exceptions import (
     ActiveEmploymentExists,
     AiNotConfigured,
@@ -42,6 +51,9 @@ from .routers import (
     todos,
     operation_logs,
     aggregate,
+    roster_imports,
+    hr_confirmations,
+    employee_full_profile,
 )
 
 app = FastAPI(
@@ -60,12 +72,68 @@ app.add_middleware(
 )
 
 
+# === 请求日志中间件 ===
+
+@app.middleware("http")
+async def request_log_middleware(request: Request, call_next):
+    start = time.time()
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration = time.time() - start
+        logger.exception(
+            "未捕获异常 | method=%s path=%s duration=%.0fms request_id=%s",
+            request.method,
+            request.url.path,
+            duration * 1000,
+            getattr(request.state, "request_id", None),
+        )
+        raise
+
+    duration = time.time() - start
+
+    log_method = logger.info
+    if response.status_code >= 500:
+        log_method = logger.error
+    elif response.status_code >= 400:
+        log_method = logger.warning
+
+    log_method(
+        "%s %s -> %s  (%.0fms)",
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration * 1000,
+    )
+    return response
+
+
+# === 启动日志 ===
+
+@app.on_event("startup")
+async def startup_log():
+    logger.info("服务启动 | env=%s debug=%s", settings.app_env, settings.app_debug)
+    logger.info("前端地址 : %s", settings.frontend_url)
+    logger.info("已注册 17 个路由模块")
+
+
 # === 异常处理器 ===
 
 @app.exception_handler(AppException)
 async def app_exception_handler(request: Request, exc: AppException):
+    status_code = _status_code_for(exc)
+    log_method = logger.error if status_code >= 500 else logger.warning
+    log_method(
+        "业务异常 | method=%s path=%s status=%s code=%s message=%s request_id=%s",
+        request.method,
+        request.url.path,
+        status_code,
+        exc.code,
+        exc.message,
+        getattr(request.state, "request_id", None),
+    )
     return JSONResponse(
-        status_code=_status_code_for(exc),
+        status_code=status_code,
         content={
             "success": False,
             "error": {
@@ -120,6 +188,9 @@ app.include_router(separation.router, prefix="/api")
 app.include_router(todos.router, prefix="/api")
 app.include_router(operation_logs.router, prefix="/api")
 app.include_router(aggregate.router, prefix="/api")
+app.include_router(roster_imports.router, prefix="/api")
+app.include_router(hr_confirmations.router, prefix="/api")
+app.include_router(employee_full_profile.router, prefix="/api")
 
 
 @app.get("/api/health")

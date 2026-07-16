@@ -150,6 +150,28 @@ const routes: RouteRecordRaw[] = [
     name: 'OperationLogList',
     component: () => import('@/views/log/OperationLogList.vue'),
   },
+  // 花名册导入
+  {
+    path: '/roster-imports',
+    name: 'RosterImportList',
+    component: () => import('@/views/roster/RosterImportList.vue'),
+  },
+  {
+    path: '/roster-imports/new',
+    name: 'RosterImportWizard',
+    component: () => import('@/views/roster/RosterImportWizard.vue'),
+  },
+  {
+    path: '/roster-imports/:id',
+    name: 'RosterImportDetail',
+    component: () => import('@/views/roster/RosterImportDetail.vue'),
+  },
+  // HR 确认事项
+  {
+    path: '/hr-confirmations',
+    name: 'HrConfirmations',
+    component: () => import('@/views/confirmation/ConfirmationList.vue'),
+  },
 ]
 
 const router = createRouter({

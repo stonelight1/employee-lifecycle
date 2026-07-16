@@ -5,9 +5,10 @@ import { fetchDashboard } from '@/services/dashboardService'
 import type { DashboardOverview } from '@/types/dashboard'
 import { lifecycleStageMap, getStatusLabel } from '@/constants/status'
 import { formatDate } from '@/utils/date'
+import { getPendingCount } from '@/services/hrConfirmationService'
 import BaseSkeleton from '@/components/base/BaseSkeleton.vue'
-import BaseEmpty from '@/components/base/BaseEmpty.vue'
 import RiskBadge from '@/components/business/RiskBadge.vue'
+import { AlertCircle, ClipboardList, Plus, Settings, Users } from 'lucide-vue-next'
 
 const router = useRouter()
 const data = ref<DashboardOverview | null>(null)
@@ -15,13 +16,20 @@ const loading = ref(true)
 const error = ref(false)
 const backendStatus = ref<'connected' | 'disconnected' | 'error'>('connected')
 const errorMessage = ref('')
+const pendingConfirmationCount = ref(0)
 
 const isEmpty = computed(() => {
   if (!data.value) return true
+  const metrics = data.value.metrics
+  const hasMetricData = Object.values(metrics ?? {}).some((value) => Number(value) > 0)
+  const hasListData =
+    (data.value.lifecycle_distribution?.length ?? 0) > 0 ||
+    (data.value.priority_work_items?.length ?? 0) > 0 ||
+    (data.value.risk_employees?.length ?? 0) > 0 ||
+    pendingConfirmationCount.value > 0
   return (
-    (data.value.metrics?.active_employee_count ?? 0) === 0 &&
-    (data.value.metrics?.probation_employee_count ?? 0) === 0 &&
-    (data.value.metrics?.overdue_work_item_count ?? 0) === 0
+    !hasMetricData &&
+    !hasListData
   )
 })
 
@@ -50,7 +58,18 @@ async function loadDashboard() {
   backendStatus.value = 'connected'
   errorMessage.value = ''
   try {
-    data.value = await fetchDashboard()
+    const [dashboardData, confirmData] = await Promise.allSettled([
+      fetchDashboard(),
+      getPendingCount(),
+    ])
+    if (dashboardData.status === 'fulfilled') {
+      data.value = dashboardData.value
+    } else {
+      throw dashboardData.reason
+    }
+    if (confirmData.status === 'fulfilled') {
+      pendingConfirmationCount.value = confirmData.value.pending_count
+    }
     backendStatus.value = 'connected'
   } catch (e: any) {
     console.error('加载工作台失败:', e)
@@ -81,7 +100,10 @@ onMounted(loadDashboard)
 </script>
 
 <template>
-  <div class="dashboard">
+  <div
+    class="dashboard"
+    :class="{ 'dashboard--empty': data && isEmpty && backendStatus === 'connected' }"
+  >
     <!-- Loading skeleton -->
     <div v-if="loading" class="dashboard-loading">
       <div class="metrics-grid">
@@ -118,25 +140,13 @@ onMounted(loadDashboard)
     </div>
 
     <!-- 欢迎区 -->
-    <div v-else-if="data" class="welcome-section">
+    <div v-else-if="data && !isEmpty" class="welcome-section">
       <div class="welcome-content">
         <h1 class="welcome-title">
-          <template v-if="!isEmpty">
-            早上好，今天有 <strong>{{ welcomeText }}</strong>
-          </template>
-          <template v-else>
-            欢迎使用员工生命周期管理系统
-          </template>
+          早上好，今天有 <strong>{{ welcomeText }}</strong>
         </h1>
-        <p v-if="isEmpty" class="welcome-subtitle">开始使用：创建一个员工档案，系统将自动管理从入职到离职的全流程。</p>
         <div class="welcome-actions">
-          <button class="action-btn primary" @click="router.push('/employees/new')">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-            新增员工
-          </button>
-          <button v-if="!isEmpty" class="action-btn secondary" @click="goToWorkItems()">
+          <button class="action-btn secondary" @click="goToWorkItems()">
             查看全部事项
           </button>
         </div>
@@ -187,6 +197,21 @@ onMounted(loadDashboard)
       <!-- 两栏布局 -->
       <div class="dashboard-columns">
         <div class="column-left">
+          <!-- 待确认事项 -->
+          <div v-if="pendingConfirmationCount > 0" class="section-card">
+            <div class="section-card-header">
+              <h3>
+                待确认事项
+                <span class="confirm-count-badge">{{ pendingConfirmationCount }}</span>
+              </h3>
+              <button class="header-link" @click="router.push('/hr-confirmations')">处理</button>
+            </div>
+            <div class="confirm-item-hint">
+              <AlertCircle :size="16" class="confirm-icon" />
+              <span>导入后仍有 {{ pendingConfirmationCount }} 条信息需要您确认</span>
+            </div>
+          </div>
+
           <div class="section-card">
             <div class="section-card-header">
               <h3>今日重点工作</h3>
@@ -240,47 +265,56 @@ onMounted(loadDashboard)
     </template>
 
     <!-- 空数据欢迎页 -->
-    <div v-else-if="data && isEmpty && backendStatus === 'connected'" class="empty-welcome">
-      <div class="empty-welcome-card">
-        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" class="empty-icon">
-          <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/>
-          <path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>
-        </svg>
-        <h2 class="text-lg" style="font-weight: 600; margin-bottom: 8px;">开始搭建您的员工体系</h2>
-        <p class="text-secondary text-sm" style="margin-bottom: 24px; max-width: 400px;">
-          点击下方按钮创建第一个员工档案，系统将自动管理入职、试用期、转正、异动和离职的全生命周期。
-        </p>
-        <div class="quick-actions">
-          <div class="quick-action-card" @click="router.push('/employees/new')">
-            <div class="qa-icon">+</div>
-            <div class="qa-text">
-              <div class="qa-title">新增员工</div>
-              <div class="qa-desc">创建员工基本信息档案</div>
-            </div>
-          </div>
-          <div class="quick-action-card" @click="router.push('/employees')">
-            <div class="qa-icon">👥</div>
-            <div class="qa-text">
-              <div class="qa-title">员工中心</div>
-              <div class="qa-desc">查看和管理所有员工</div>
-            </div>
-          </div>
-          <div class="quick-action-card" @click="router.push('/followup-nodes')">
-            <div class="qa-icon">⚙</div>
-            <div class="qa-text">
-              <div class="qa-title">节点配置</div>
-              <div class="qa-desc">配置跟进节点和流程</div>
-            </div>
+    <main v-else-if="data && isEmpty && backendStatus === 'connected'" class="dashboard-content">
+      <section class="dashboard-empty" aria-labelledby="dashboard-empty-title">
+        <div class="dashboard-empty__content">
+          <p class="dashboard-empty__eyebrow">员工生命周期管理</p>
+          <h1 id="dashboard-empty-title" class="dashboard-empty__title">开始搭建您的员工管理体系</h1>
+          <p class="dashboard-empty__desc">
+            创建员工档案后，系统将自动管理员工的入职、试用期、转正、异动和离职流程。
+          </p>
+          <RouterLink class="action-btn primary dashboard-empty__primary" to="/employees/new">
+            <Plus :size="16" aria-hidden="true" />
+            新增员工
+          </RouterLink>
+
+          <div class="dashboard-empty__shortcuts" aria-label="快捷入口">
+            <RouterLink class="dashboard-empty__shortcut" to="/employees">
+              <span class="dashboard-empty__shortcut-icon" aria-hidden="true">
+                <Users :size="22" />
+              </span>
+              <span class="dashboard-empty__shortcut-title">员工中心</span>
+              <span class="dashboard-empty__shortcut-desc">查看和管理员工档案</span>
+            </RouterLink>
+            <RouterLink class="dashboard-empty__shortcut" to="/followup-nodes">
+              <span class="dashboard-empty__shortcut-icon" aria-hidden="true">
+                <Settings :size="22" />
+              </span>
+              <span class="dashboard-empty__shortcut-title">节点配置</span>
+              <span class="dashboard-empty__shortcut-desc">配置试用期跟进节点</span>
+            </RouterLink>
+            <RouterLink class="dashboard-empty__shortcut" to="/work-items">
+              <span class="dashboard-empty__shortcut-icon" aria-hidden="true">
+                <ClipboardList :size="22" />
+              </span>
+              <span class="dashboard-empty__shortcut-title">工作事项</span>
+              <span class="dashboard-empty__shortcut-desc">查看当前需要处理的事项</span>
+            </RouterLink>
           </div>
         </div>
-      </div>
-    </div>
+      </section>
+    </main>
   </div>
 </template>
 
 <style scoped>
 .dashboard {
+  width: 100%;
   max-width: 1400px;
+}
+.dashboard--empty {
+  max-width: none;
+  width: calc(100vw - var(--sidebar-width) - 64px);
 }
 
 /* Welcome */
@@ -313,6 +347,7 @@ onMounted(loadDashboard)
 .action-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   padding: 8px 18px;
   border-radius: var(--radius-sm);
@@ -320,6 +355,7 @@ onMounted(loadDashboard)
   font-weight: 500;
   cursor: pointer;
   border: none;
+  text-decoration: none;
 }
 .action-btn.primary {
   background: var(--color-primary);
@@ -440,6 +476,34 @@ onMounted(loadDashboard)
 .work-item-row.is-overdue {
   border-left: 3px solid var(--color-danger);
 }
+.confirm-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--color-danger);
+  margin-left: 8px;
+}
+.confirm-item-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--color-warning-bg, #fffbeb);
+  border-radius: 8px;
+  color: var(--color-warning-text, #92400e);
+  font-size: 14px;
+}
+.confirm-icon {
+  flex-shrink: 0;
+  color: var(--color-warning);
+}
 .work-item-title {
   font-size: var(--font-size-sm);
   font-weight: 500;
@@ -504,60 +568,95 @@ onMounted(loadDashboard)
   text-align: right;
 }
 
-/* Empty welcome */
-.empty-welcome {
+/* Empty dashboard */
+.dashboard-content {
+  width: 100%;
+}
+.dashboard-empty {
+  min-height: calc(100vh - var(--topbar-height) - 48px);
   display: flex;
   justify-content: center;
-  padding: 48px 0;
+  align-items: flex-start;
+  padding: clamp(64px, 10vh, 120px) 32px 32px;
+  box-sizing: border-box;
 }
-.empty-welcome-card {
+.dashboard-empty__content {
+  width: 100%;
+  max-width: 880px;
   text-align: center;
-  max-width: 480px;
 }
-.empty-icon {
+.dashboard-empty__eyebrow {
   color: var(--color-text-tertiary);
-  margin-bottom: 16px;
-  opacity: 0.5;
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  margin: 0 0 12px;
 }
-.quick-actions {
+.dashboard-empty__title {
+  color: var(--color-text-primary);
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  line-height: 1.25;
+  margin: 0;
+}
+.dashboard-empty__desc {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-md);
+  line-height: 1.7;
+  max-width: 620px;
+  margin: 16px auto 24px;
+}
+.dashboard-empty__primary {
+  min-width: 132px;
+  height: 40px;
+}
+.dashboard-empty__shortcuts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 40px;
+}
+.dashboard-empty__shortcut {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-}
-.quick-action-card {
-  display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 16px 20px;
+  min-width: 0;
+  padding: 22px 18px;
+  background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  cursor: pointer;
-  transition: all 0.15s;
-  text-align: left;
+  color: var(--color-text-primary);
+  text-align: center;
+  text-decoration: none;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
 }
-.quick-action-card:hover {
-  border-color: var(--color-primary);
+.dashboard-empty__shortcut:hover,
+.dashboard-empty__shortcut:focus-visible {
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-card);
+  background: var(--color-surface-secondary);
+  outline: none;
+}
+.dashboard-empty__shortcut-icon {
+  width: 44px;
+  height: 44px;
+  color: var(--color-primary);
   background: var(--color-primary-soft);
-}
-.qa-icon {
-  width: 40px;
-  height: 40px;
-  background: var(--color-bg);
   border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
-  flex-shrink: 0;
+  margin-bottom: 14px;
 }
-.qa-title {
+.dashboard-empty__shortcut-title {
   font-size: var(--font-size-sm);
   font-weight: 600;
+  line-height: 1.4;
 }
-.qa-desc {
+.dashboard-empty__shortcut-desc {
   font-size: var(--font-size-xs);
-  color: var(--color-text-tertiary);
-  margin-top: 2px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  margin-top: 4px;
 }
 
 /* Loading */
@@ -573,6 +672,33 @@ onMounted(loadDashboard)
   }
   .metrics-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 1280px) {
+  .dashboard--empty {
+    width: calc(100vw - var(--sidebar-width) - 48px);
+  }
+  :global(.app-layout:has(.sidebar.collapsed) .dashboard--empty) {
+    width: calc(100vw - var(--sidebar-collapsed-width) - 48px);
+  }
+}
+
+@media (min-width: 1281px) {
+  :global(.app-layout:has(.sidebar.collapsed) .dashboard--empty) {
+    width: calc(100vw - var(--sidebar-collapsed-width) - 64px);
+  }
+}
+
+@media (max-width: 1100px) {
+  .dashboard-empty {
+    padding: clamp(48px, 8vh, 80px) 16px 24px;
+  }
+  .dashboard-empty__shortcuts {
+    grid-template-columns: 1fr;
+    max-width: 560px;
+    margin-left: auto;
+    margin-right: auto;
   }
 }
 </style>

@@ -6,7 +6,7 @@ import type { SeparationItem } from '@/types'
 import { formatDate } from '@/utils/date'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
-import { employmentStatusMap, getStatusLabel } from '@/constants/status'
+import { employmentStatusMap, separationTypeMap, getStatusLabel } from '@/constants/status'
 import BaseBadge from '@/components/base/BaseBadge.vue'
 import BaseModal from '@/components/base/BaseModal.vue'
 
@@ -203,7 +203,7 @@ onMounted(loadData)
         </thead>
         <tbody>
           <tr v-for="r in records" :key="r.id">
-            <td>{{ r.separation_type || '-' }}</td>
+            <td>{{ getStatusLabel(separationTypeMap, r.separation_type) }}</td>
             <td>{{ r.reason || '-' }}</td>
             <!-- 修复：计划日期使用 planned_separation_date -->
             <td>{{ formatDate(r.planned_separation_date) }}</td>

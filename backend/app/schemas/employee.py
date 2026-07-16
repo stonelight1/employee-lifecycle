@@ -21,10 +21,12 @@ class EmployeeCreate(BaseModel):
 
 
 class EmployeeUpdate(BaseModel):
-    """更新员工请求（所有字段可选）。"""
+    """更新员工请求（所有字段可选）。
+
+    注意：姓名不允许通过普通更新接口修改。
+    """
 
     employee_no: Optional[str] = Field(default=None, max_length=50)
-    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     mobile: Optional[str] = Field(default=None, max_length=30)
     email: Optional[str] = Field(default=None, max_length=200)
     source: Optional[str] = Field(default=None, max_length=100)
