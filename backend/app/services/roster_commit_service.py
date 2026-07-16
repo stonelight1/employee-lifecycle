@@ -331,6 +331,13 @@ def _process_new_row(
 
     # ── 2. 创建 EmployeeProfile ──
     profile_data = _extract_profile_data(data)
+    # 新行创建时，identity_card / gender / birth_date 属于初始值，无需确认，一并写入档案
+    for field in ("identity_card", "birth_date", "gender"):
+        if field in data and data.get(field) is not None:
+            if field == "birth_date":
+                profile_data[field] = _parse_optional_date(data[field])
+            else:
+                profile_data[field] = data[field]
     if profile_data:
         _create_profile(db, employee_id, profile_data, operator)
         _write_operation(

@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, datetime
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from ..enums import EmployeeStatus, EmploymentStatus, ProbationStatus, FollowupTaskStatus, TodoStatus
+from ..enums import (
+    ConfirmationItemStatus,
+    EmployeeStatus,
+    EmploymentStatus,
+    FollowupTaskStatus,
+    ProbationStatus,
+    TodoStatus,
+)
 
 logger = logging.getLogger(__name__)
 from ..exceptions import (
@@ -25,6 +33,7 @@ from ..models.contract import EmploymentContract
 from ..models.risk import RiskAssessment
 from ..models.followup_task import FollowupTask
 from ..models.todo import SystemTodo
+from ..models.hr_confirmation import HrConfirmationItem
 from .normalize import normalize_name
 from .risk_query import latest_risks_by_employee, risk_level_value
 
@@ -150,6 +159,11 @@ def get_employee(db: Session, employee_id: int) -> Optional[dict]:
     return emp.dict()
 
 
+# ============================================================
+# 批量查询辅助函数 — 消除 N+1
+# ============================================================
+
+
 def _find_current_employment(db: Session, employee_id: int) -> Optional[EmploymentRecord]:
     """找到员工的当前有效任职。
 
@@ -170,6 +184,119 @@ def _find_current_employment(db: Session, employee_id: int) -> Optional[Employme
         .order_by(EmploymentRecord.employment_seq.desc())
         .first()
     )
+
+
+def _batch_current_employments(
+    db: Session, employee_ids: list[int]
+) -> dict[int, Optional[EmploymentRecord]]:
+    """批量查询所有员工的当前任职。"""
+    if not employee_ids:
+        return {}
+    employments = (
+        db.query(EmploymentRecord)
+        .filter(
+            EmploymentRecord.employee_id.in_(employee_ids),
+            EmploymentRecord.is_deleted == False,
+            EmploymentRecord.employment_status.in_(
+                [EmploymentStatus.PENDING, EmploymentStatus.ACTIVE, EmploymentStatus.SEPARATING]
+            ),
+        )
+        .order_by(EmploymentRecord.employee_id, EmploymentRecord.employment_seq.desc())
+        .all()
+    )
+    result: dict[int, Optional[EmploymentRecord]] = {}
+    # 每个 employee_id 只保留 employment_seq 最大的那条
+    for emp_rec in employments:
+        if emp_rec.employee_id not in result:
+            result[emp_rec.employee_id] = emp_rec
+    return result
+
+
+def _batch_profiles(
+    db: Session, employee_ids: list[int]
+) -> dict[int, EmployeeProfile]:
+    """批量查询员工档案（含身份证号、性别、出生日期、社保公积金状态）。"""
+    if not employee_ids:
+        return {}
+    profiles = (
+        db.query(EmployeeProfile)
+        .filter(
+            EmployeeProfile.employee_id.in_(employee_ids),
+        )
+        .all()
+    )
+    return {p.employee_id: p for p in profiles}
+
+
+def _batch_contracts(
+    db: Session, employee_ids: list[int]
+) -> dict[int, list[EmploymentContract]]:
+    """批量查询员工合同，按 employee_id 分组。"""
+    if not employee_ids:
+        return {}
+    contracts = (
+        db.query(EmploymentContract)
+        .filter(
+            EmploymentContract.employee_id.in_(employee_ids),
+            EmploymentContract.is_deleted == False,
+        )
+        .order_by(EmploymentContract.id.desc())
+        .all()
+    )
+    result: dict[int, list[EmploymentContract]] = {}
+    for c in contracts:
+        result.setdefault(c.employee_id, []).append(c)
+    return result
+
+
+def _batch_pending_tasks(
+    db: Session, employment_ids: list[int]
+) -> dict[int, list[FollowupTask]]:
+    """批量查询待处理跟进任务，按 employment_id 分组。"""
+    if not employment_ids:
+        return {}
+    tasks = (
+        db.query(FollowupTask)
+        .filter(
+            FollowupTask.employment_id.in_(employment_ids),
+            FollowupTask.is_deleted == False,
+            FollowupTask.followup_status.in_(
+                [FollowupTaskStatus.PENDING, FollowupTaskStatus.IN_PROGRESS]
+            ),
+        )
+        .order_by(FollowupTask.planned_date.asc(), FollowupTask.id.asc())
+        .all()
+    )
+    result: dict[int, list[FollowupTask]] = {}
+    for t in tasks:
+        result.setdefault(t.employment_id, []).append(t)
+    return result
+
+
+def _batch_pending_hr_confirmations(
+    db: Session, employee_ids: list[int]
+) -> dict[int, list[HrConfirmationItem]]:
+    """批量查询待 HR 确认事项，按 employee_id 分组。"""
+    if not employee_ids:
+        return {}
+    items = (
+        db.query(HrConfirmationItem)
+        .filter(
+            HrConfirmationItem.employee_id.in_(employee_ids),
+            HrConfirmationItem.item_status == ConfirmationItemStatus.PENDING,
+        )
+        .order_by(HrConfirmationItem.created_at.asc())
+        .all()
+    )
+    result: dict[int, list[HrConfirmationItem]] = {}
+    for item in items:
+        result.setdefault(item.employee_id, []).append(item)
+    return result
+
+
+# ============================================================
+# 生命周期阶段判断
+# ============================================================
 
 
 def resolve_lifecycle_stage(employment: Optional[EmploymentRecord]) -> str:
@@ -207,6 +334,169 @@ def _enum_value(value) -> str:
     return value.value if hasattr(value, "value") else str(value)
 
 
+def _str_date(d: Optional[date | datetime]) -> Optional[str]:
+    """将 date/datetime 转为 YYYY-MM-DD 字符串。"""
+    if not d:
+        return None
+    if isinstance(d, datetime):
+        return d.strftime("%Y-%m-%d")
+    return d.isoformat()
+
+
+# ============================================================
+# 年龄计算
+# ============================================================
+
+
+def _parse_birth_date_from_id_card(id_card: str) -> Optional[date]:
+    """从身份证号码中提取出生日期。
+
+    支持 18 位和 15 位身份证。
+    """
+    if not id_card:
+        return None
+    card = id_card.strip().upper()
+    # 18 位：YYYYMMDD
+    if len(card) == 18:
+        y_str, m_str, d_str = card[6:10], card[10:12], card[12:14]
+    # 15 位：YYMMDD，年份补 19
+    elif len(card) == 15:
+        y_str, m_str, d_str = f"19{card[6:8]}", card[8:10], card[10:12]
+    else:
+        return None
+
+    if not (y_str.isdigit() and m_str.isdigit() and d_str.isdigit()):
+        return None
+    try:
+        return date(int(y_str), int(m_str), int(d_str))
+    except (ValueError, OverflowError):
+        return None
+
+
+def _calculate_age(birth: date, reference: Optional[date] = None) -> int:
+    """根据出生日期和参考日期计算年龄，参考日期默认当天。
+
+    必须判断今年生日是否已经到达。
+    """
+    if reference is None:
+        reference = date.today()
+    age = reference.year - birth.year
+    # 如果今年生日还没到，减 1
+    if (reference.month, reference.day) < (birth.month, birth.day):
+        age -= 1
+    return age
+
+
+def _resolve_birth_date_and_age(
+    profile: Optional[EmployeeProfile],
+) -> tuple[Optional[date], Optional[int]]:
+    """从 profile 中解析出生日期和年龄。
+
+    优先级：
+      1. 从有效身份证号码中提取出生日期
+      2. 身份证无法解析时，使用员工档案中的 birth_date
+      3. 两者都没有时返回 (None, None)
+    """
+    birth: Optional[date] = None
+
+    if profile:
+        # 优先从身份证提取
+        if profile.identity_card:
+            birth = _parse_birth_date_from_id_card(profile.identity_card)
+        # 回退到 birth_date
+        if birth is None and profile.birth_date:
+            birth = profile.birth_date
+
+    age = _calculate_age(birth) if birth else None
+    return birth, age
+
+
+# ============================================================
+# 试用期进度计算
+# ============================================================
+
+
+def _calc_probation_progress(
+    emp_rec: EmploymentRecord,
+) -> tuple[Optional[int], Optional[int], Optional[int], Optional[str]]:
+    """计算试用期进度。
+
+    Returns:
+        (probation_progress, days_remaining, overdue_days, expected_regularization_date_str)
+    """
+    hire = emp_rec.actual_hire_date or emp_rec.hire_date
+    prob_end = emp_rec.probation_end_date or emp_rec.expected_regularization_date
+    today = date.today()
+
+    if not hire or not prob_end:
+        return None, None, None, None
+
+    if isinstance(hire, datetime):
+        hire = hire.date()
+    if isinstance(prob_end, datetime):
+        prob_end = prob_end.date()
+
+    total_days = (prob_end - hire).days
+    if total_days <= 0:
+        return 100, 0, 0, _str_date(prob_end)
+
+    elapsed = (today - hire).days
+    progress = min(100, max(0, round(elapsed / total_days * 100)))
+
+    if today > prob_end:
+        overdue_days = (today - prob_end).days
+        days_remaining = 0
+    else:
+        overdue_days = 0
+        days_remaining = (prob_end - today).days
+
+    return progress, days_remaining, overdue_days, _str_date(prob_end)
+
+
+# ============================================================
+# 司龄计算
+# ============================================================
+
+
+def _calc_tenure(hire_date_val: Optional[date], reference: Optional[date] = None) -> Optional[str]:
+    """计算司龄文本。
+
+    格式：X年X个月 或 X天
+    """
+    if not hire_date_val:
+        return None
+    if isinstance(hire_date_val, datetime):
+        hire_date_val = hire_date_val.date()
+    if reference is None:
+        reference = date.today()
+
+    if hire_date_val > reference:
+        return "0天"
+
+    total_days = (reference - hire_date_val).days
+    years = total_days // 365
+    remaining_days = total_days % 365
+    months = remaining_days // 30
+    days = remaining_days % 30
+
+    parts = []
+    if years > 0:
+        parts.append(f"{years}年")
+    if months > 0:
+        parts.append(f"{months}个月")
+    if years == 0 and months == 0:
+        parts.append(f"{days}天")
+    elif days > 0:
+        parts.append(f"{days}天")
+
+    return "".join(parts) if parts else "0天"
+
+
+# ============================================================
+# 下一事项
+# ============================================================
+
+
 def _calc_days_until(due_date: date | datetime | None) -> tuple[Optional[int], int]:
     """计算 days_until_due（可为负）和 overdue_days（仅正数）。"""
     if not due_date:
@@ -219,31 +509,27 @@ def _calc_days_until(due_date: date | datetime | None) -> tuple[Optional[int], i
     return delta, overdue
 
 
-def _next_action_for_employee(
-    db: Session, employee_id: int, current_emp: Optional[EmploymentRecord]
+def _build_next_action_for_employee(
+    db: Session,
+    employee_id: int,
+    current_emp: Optional[EmploymentRecord],
+    pending_tasks_by_employment: dict[int, list[FollowupTask]],
+    pending_confirmations_by_employee: dict[int, list[HrConfirmationItem]],
+    employment_ids_for_todos: list[int],
 ) -> Optional[dict]:
-    """获取员工下一步行动事项，返回已排序的最近一条。"""
+    """获取员工下一步行动事项，返回已排序的最近一条。
+
+    使用预查询的批量数据避免 N+1。
+    """
     if not current_emp:
         return None
-    now = datetime.now()
-    today = now.date()
+    today = date.today()
 
     candidates: list[dict] = []
 
-    # 1. 逾期/待处理跟进任务
-    pending_tasks = (
-        db.query(FollowupTask)
-        .filter(
-            FollowupTask.employment_id == current_emp.id,
-            FollowupTask.is_deleted == False,
-            FollowupTask.followup_status.in_(
-                [FollowupTaskStatus.PENDING, FollowupTaskStatus.IN_PROGRESS]
-            ),
-        )
-        .order_by(FollowupTask.planned_date.asc(), FollowupTask.id.asc())
-        .all()
-    )
-    for task in pending_tasks:
+    # 1. 逾期/待处理跟进任务（使用批量数据）
+    emp_rec_tasks = pending_tasks_by_employment.get(current_emp.id, [])
+    for task in emp_rec_tasks:
         due = task.planned_date
         days_until, overdue = _calc_days_until(due)
         candidates.append({
@@ -256,17 +542,11 @@ def _next_action_for_employee(
             "overdue_days": overdue,
         })
 
-    # 2. 待办
+    # 2. 待办（使用批量查询的 employment_ids）
     pending_todos = (
         db.query(SystemTodo)
         .filter(
-            SystemTodo.business_id.in_(
-                db.query(EmploymentRecord.id)
-                .filter(
-                    EmploymentRecord.employee_id == employee_id,
-                    EmploymentRecord.is_deleted == False,
-                )
-            ),
+            SystemTodo.business_id.in_(employment_ids_for_todos),
             SystemTodo.todo_status == TodoStatus.PENDING,
         )
         .order_by(SystemTodo.due_at.asc(), SystemTodo.id.asc())
@@ -287,7 +567,7 @@ def _next_action_for_employee(
 
     # 3. 待转正
     if current_emp.probation_status == ProbationStatus.PENDING_REVIEW:
-        due = current_emp.probation_end_date
+        due = current_emp.probation_end_date or current_emp.expected_regularization_date
         days_until, overdue = _calc_days_until(due)
         candidates.append({
             "id": current_emp.id,
@@ -301,7 +581,7 @@ def _next_action_for_employee(
 
     # 4. 待入职
     if current_emp.employment_status == EmploymentStatus.PENDING:
-        due = current_emp.hire_date
+        due = current_emp.hire_date or current_emp.expected_hire_date
         days_until, overdue = _calc_days_until(due)
         candidates.append({
             "id": current_emp.id,
@@ -313,74 +593,67 @@ def _next_action_for_employee(
             "overdue_days": overdue,
         })
 
+    # 5. HR待确认事项（使用批量数据）
+    confirmations = pending_confirmations_by_employee.get(employee_id, [])
+    for conf in confirmations:
+        candidates.append({
+            "id": conf.id,
+            "source_type": "HR_CONFIRMATION",
+            "title": conf.title,
+            "due_at": None,
+            "status": "PENDING",
+            "days_until_due": 0,
+            "overdue_days": 0,
+        })
+
     if not candidates:
         return None
 
-    # 排序：已逾期优先 → 截止日期更早优先 → ID 较小优先
-    candidates.sort(key=lambda c: (
-        0 if c["overdue_days"] > 0 else 1,
-        c["days_until_due"] if c["days_until_due"] is not None else 9999,
-        c["id"],
-    ))
-    return candidates[0]
+    # 排序：已逾期优先 → 今天到期 → 7天内 → 截止日期更早优先 → ID 较小优先
+    def _sort_key(c):
+        overdue = c["overdue_days"] > 0
+        days = c["days_until_due"] if c["days_until_due"] is not None else 9999
+        is_today = days == 0
+        is_soon = 0 < days <= 7
+        # 优先级分组：逾期(0) > 今天(1) > 7天内(2) > 普通(3)
+        priority_group = 0 if overdue else (1 if is_today else (2 if is_soon else 3))
+        return (priority_group, days if days is not None else 9999, c["id"])
+
+    candidates.sort(key=_sort_key)
+    best = candidates[0]
+
+    # 添加 urgency 和 days_remaining
+    days_until = best.get("days_until_due")
+    overdue_days = best.get("overdue_days", 0)
+    if overdue_days > 0:
+        urgency = "OVERDUE"
+        days_remaining = 0
+    elif days_until is not None and days_until == 0:
+        urgency = "TODAY"
+        days_remaining = 0
+    elif days_until is not None and days_until <= 7:
+        urgency = "SOON"
+        days_remaining = days_until
+    elif days_until is not None:
+        urgency = "NORMAL"
+        days_remaining = days_until
+    else:
+        urgency = "NORMAL"
+        days_remaining = None
+
+    best["urgency"] = urgency
+    best["days_remaining"] = days_remaining
+    return best
 
 
-def _count_filtered_matches(
-    db: Session,
-    employee_ids: list[int],
-    lifecycle_stage_filter: str | None,
-    risk_level_filter: str | None,
-) -> int:
-    """批量计算经过 lifecycle_stage / risk_level 内存过滤后的匹配总数。
-
-    当这两个筛选器激活时，无法通过 SQL COUNT 获得准确总数，
-    需要逐员工计算生命周期阶段和风险等级后再过滤计数。
-    """
-    if not lifecycle_stage_filter and not risk_level_filter:
-        return len(employee_ids)
-
-    # 批量查询所有匹配员工的当前任职
-    employments = (
-        db.query(EmploymentRecord)
-        .filter(
-            EmploymentRecord.employee_id.in_(employee_ids),
-            EmploymentRecord.is_deleted == False,
-            EmploymentRecord.employment_status.in_(
-                [EmploymentStatus.PENDING, EmploymentStatus.ACTIVE, EmploymentStatus.SEPARATING]
-            ),
-        )
-        .all()
-    )
-    # 同一员工可能存在多条任职，按 employee_id 分组保留 employment_seq 最大的一条
-    emp_id_to_employment: dict[int, EmploymentRecord] = {}
-    for emp_rec in employments:
-        existing = emp_id_to_employment.get(emp_rec.employee_id)
-        if existing is None or emp_rec.employment_seq > existing.employment_seq:
-            emp_id_to_employment[emp_rec.employee_id] = emp_rec
-
-    # 批量查询所有匹配员工的最新风险
-    risk_map = latest_risks_by_employee(db, employee_ids)
-
-    count = 0
-    for emp_id in employee_ids:
-        emp_rec = emp_id_to_employment.get(emp_id)
-        stage = resolve_lifecycle_stage(emp_rec) if emp_rec else "UNKNOWN"
-        if lifecycle_stage_filter and stage != lifecycle_stage_filter:
-            continue
-
-        risk_obj = risk_map.get(emp_id)
-        risk_level = risk_level_value(risk_obj)
-        if risk_level_filter and risk_level_filter != risk_level:
-            continue
-
-        count += 1
-
-    return count
+# ============================================================
+# 主查询 — 员工列表（含排序、聚合）
+# ============================================================
 
 
 def list_employees(db: Session, filters: dict) -> tuple[list[dict], int]:
     """
-    分页查询员工列表，返回聚合数据（任职、生命周期、风险、下一事项）。
+    分页查询员工列表，返回聚合数据（任职、生命周期、风险、下一事项等）。
 
     filters 支持：keyword, name, employee_no, employee_status,
                   lifecycle_stage, risk_level,
@@ -391,7 +664,6 @@ def list_employees(db: Session, filters: dict) -> tuple[list[dict], int]:
     keyword = filters.get("keyword")
     if keyword:
         like = f"%{keyword}%"
-        # 在 Employee 表中搜索姓名、编号、手机、邮箱
         emp_filter = query.filter(
             or_(
                 Employee.name.like(like),
@@ -402,7 +674,6 @@ def list_employees(db: Session, filters: dict) -> tuple[list[dict], int]:
         )
         emp_ids_from_employee = {e.id for e in emp_filter.all()}
 
-        # 在 EmploymentRecord 表中搜索部门、岗位
         emp_from_employment = (
             db.query(EmploymentRecord.employee_id)
             .filter(
@@ -431,66 +702,37 @@ def list_employees(db: Session, filters: dict) -> tuple[list[dict], int]:
     if status:
         query = query.filter(Employee.employee_status == status)
 
-    total_sql = query.count()
-
-    # 排序
-    sort_by = filters.get("sort_by") or "id"
-    sort_order = filters.get("sort_order") or "desc"
-    sort_col = getattr(Employee, sort_by, Employee.id)
-    if sort_order == "asc":
-        query = query.order_by(sort_col.asc())
-    else:
-        query = query.order_by(sort_col.desc())
-
-    page = filters.get("page", 1)
-    page_size = filters.get("page_size", 10)
-    offset = (page - 1) * page_size
-
-    # 生命周期阶段过滤和风险等级过滤需要在聚合后处理
+    # 生命周期阶段和风险等级筛选
     lifecycle_stage_filter = filters.get("lifecycle_stage")
     risk_level_filter = filters.get("risk_level")
-    need_filter = lifecycle_stage_filter or risk_level_filter
+    need_memory_filter = lifecycle_stage_filter or risk_level_filter
 
-    if need_filter:
-        # 获取所有匹配 SQL 条件（未分页）的员工 ID
-        # 需要重建一个不包含 offset/limit 的查询
-        base_query = db.query(Employee).filter(Employee.is_deleted == False)
-        if keyword:
-            base_query = base_query.filter(Employee.id.in_(all_ids))
-        if name_filter:
-            base_query = base_query.filter(Employee.normalized_name.like(f"%{normalize_name(name_filter)}%"))
-        if employee_no:
-            base_query = base_query.filter(Employee.employee_no.like(f"%{employee_no}%"))
-        if status:
-            base_query = base_query.filter(Employee.employee_status == status)
+    # 先获取所有匹配基础 SQL 条件的员工（不分页）
+    base_employees = query.all()
+    base_sql_ids = [e.id for e in base_employees]
+    emp_dict: dict[int, Employee] = {e.id: e for e in base_employees}
 
-        all_matching_ids = [e.id for e in base_query.with_entities(Employee.id).all()]
-        total = _count_filtered_matches(db, all_matching_ids, lifecycle_stage_filter, risk_level_filter)
+    if not base_sql_ids:
+        return [], 0
 
-        # 循环取 SQL 分页数据直到凑满当前页应有的条数（内存过滤后会减少）
-        collected_dicts: list[dict] = []
-        fetch_page = page
-        while len(collected_dicts) < page_size:
-            batch = query.offset((fetch_page - 1) * page_size).limit(page_size).all()
-            if not batch:
-                break
-            collected_dicts.extend(e.dict() for e in batch)
-            fetch_page += 1
-        result = collected_dicts
-    else:
-        total = total_sql
-        employees = query.offset(offset).limit(page_size).all()
-        result = [e.dict() for e in employees]
+    # 批量查询所有相关辅助数据
+    employments_map = _batch_current_employments(db, base_sql_ids)
+    profiles_map = _batch_profiles(db, base_sql_ids)
+    contracts_map = _batch_contracts(db, base_sql_ids)
+    risk_map = latest_risks_by_employee(db, base_sql_ids)
 
-    # 批量查询所有相关员工的最新风险
-    emp_ids_in_result = [e["id"] for e in result]
-    risk_map = latest_risks_by_employee(db, emp_ids_in_result)
+    # 收集所有 employment_id 用于批量查询任务
+    all_employment_ids = [
+        e.id for e in employments_map.values() if e is not None
+    ]
+    pending_tasks_map = _batch_pending_tasks(db, all_employment_ids)
+    pending_confirmations_map = _batch_pending_hr_confirmations(db, base_sql_ids)
 
-    enriched = []
-    for emp_dict in result:
-        emp_id = emp_dict["id"]
-        current_emp = _find_current_employment(db, emp_id)
-        stage = resolve_lifecycle_stage(current_emp) if current_emp else "UNKNOWN"
+    # 构建所有员工的聚合数据
+    all_enriched: list[dict[str, Any]] = []
+    for emp_id in base_sql_ids:
+        emp_rec = employments_map.get(emp_id)
+        stage = resolve_lifecycle_stage(emp_rec) if emp_rec else "UNKNOWN"
 
         # lifecycle_stage 过滤
         if lifecycle_stage_filter and stage != lifecycle_stage_filter:
@@ -498,54 +740,237 @@ def list_employees(db: Session, filters: dict) -> tuple[list[dict], int]:
 
         # risk_level 过滤
         risk_obj = risk_map.get(emp_id)
-        risk_level = risk_level_value(risk_obj)
-        if risk_level_filter and risk_level_filter != risk_level:
+        risk_level_val = risk_level_value(risk_obj)
+        if risk_level_filter and risk_level_filter != risk_level_val:
             continue
 
-        # 构建聚合返回项
-        enriched_item: dict = {
-            "id": emp_id,
-            "name": emp_dict.get("name"),
-            "employee_no": emp_dict.get("employee_no"),
-            "mobile": emp_dict.get("mobile"),
-            "email": emp_dict.get("email"),
-            "employee_status": emp_dict.get("employee_status"),
-            "lifecycle_stage": stage,
+        emp_db = emp_dict.get(emp_id)
+        if not emp_db:
+            continue
+
+        enriched_item = _build_enriched_item(
+            emp_db=emp_db,
+            stage=stage,
+            emp_rec=emp_rec,
+            risk_obj=risk_obj,
+            risk_level_val=risk_level_val,
+            profile=profiles_map.get(emp_id),
+            contracts=contracts_map.get(emp_id, []),
+            pending_tasks=pending_tasks_map,
+            pending_confirmations=pending_confirmations_map,
+            db=db,
+        )
+        all_enriched.append(enriched_item)
+
+    # 排序
+    sort_by = filters.get("sort_by") or "default"
+    sort_order = filters.get("sort_order") or "asc"
+
+    # 获取各状态筛选以确定默认排序
+    lifecycle_filter = lifecycle_stage_filter
+
+    if sort_by == "default":
+        all_enriched = _default_sort(all_enriched, lifecycle_filter)
+    elif sort_by in ("name", "actual_hire_date", "expected_regularization_date"):
+        reverse = sort_order == "desc"
+        all_enriched.sort(key=lambda x: (x.get(sort_by) or "") if sort_by == "name" else (x.get(sort_by) or "9999-99-99"), reverse=reverse)
+    elif sort_by == "age":
+        reverse = sort_order == "desc"
+        all_enriched.sort(key=lambda x: x.get("age") or 0, reverse=reverse)
+    elif sort_by == "probation_progress":
+        reverse = sort_order == "desc"
+        all_enriched.sort(key=lambda x: x.get("probation_progress") if x.get("probation_progress") is not None else -1, reverse=reverse)
+    elif sort_by == "risk_level":
+        risk_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "NONE": 3, None: 4}
+        reverse = sort_order == "desc"
+        all_enriched.sort(key=lambda x: risk_order.get(x.get("risk", {}).get("level"), 4), reverse=reverse)
+
+    # 分页
+    total = len(all_enriched)
+    page = filters.get("page", 1)
+    page_size = filters.get("page_size", 10)
+    start = (page - 1) * page_size
+    end = start + page_size
+    result = all_enriched[start:end]
+
+    return result, total
+
+
+def _default_sort(items: list[dict], lifecycle_filter: Optional[str]) -> list[dict]:
+    """默认排序：各状态使用业务排序规则。"""
+    if lifecycle_filter:
+        return _sort_by_status(items, lifecycle_filter)
+    return _sort_all(items)
+
+
+def _sort_all(items: list[dict]) -> list[dict]:
+    """"全部"状态下默认排序。
+
+    第一优先：试用期员工（PROBATION）
+    第二优先：试用期进度从高到低
+    第三优先：预计转正日期从早到晚
+    第四优先：实际入职日期从近到远
+    第五优先：ID 从小到大
+    """
+
+    def sort_key(item):
+        stage = item.get("lifecycle_stage", "UNKNOWN")
+        # 试用期排序权重
+        stage_order = {
+            "PROBATION": 0,
+            "REGULARIZATION_PENDING": 1,
+            "PENDING": 2,
+            "ACTIVE": 3,
+            "SEPARATING": 4,
+            "SEPARATED": 5,
+            "UNKNOWN": 6,
         }
+        progress = item.get("probation_progress")
+        progress_sort = -progress if progress is not None else -1  # 进度高的在前
+        reg_date = item.get("expected_regularization_date") or "9999-99-99"
+        hire_date = item.get("actual_hire_date") or "9999-99-99"
+        emp_id = item.get("id", 0)
 
-        enrichment = _build_enrichment(current_emp, risk_obj, risk_level, emp_id, db)
-        enriched_item.update(enrichment)
-        enriched.append(enriched_item)
+        return (stage_order.get(stage, 6), progress_sort, reg_date, hire_date, emp_id)
 
-    return enriched, total
+    return sorted(items, key=sort_key)
 
 
-def _build_enrichment(
-    current_emp: Optional[EmploymentRecord],
+def _sort_by_status(items: list[dict], lifecycle_filter: str) -> list[dict]:
+    """按特定生命周期状态的默认排序。"""
+
+    if lifecycle_filter == "PENDING":
+        # 预计入职日期从早到晚，逾期的排在最前面
+        def sort_key(item):
+            hire_date = item.get("expected_hire_date") or "9999-99-99"
+            overdue = 0 if hire_date >= str(date.today()) else 1
+            return (-overdue, hire_date)
+        return sorted(items, key=sort_key)
+
+    elif lifecycle_filter == "PROBATION":
+        # 试用进度从高到低，预计转正日期从早到晚
+        def sort_key(item):
+            progress = item.get("probation_progress")
+            progress_sort = -progress if progress is not None else -1
+            reg_date = item.get("expected_regularization_date") or "9999-99-99"
+            return (progress_sort, reg_date)
+        return sorted(items, key=sort_key)
+
+    elif lifecycle_filter == "REGULARIZATION_PENDING":
+        # 已超过预计转正日期的排最前，然后按预计转正日期从早到晚
+        def sort_key(item):
+            reg_date = item.get("expected_regularization_date")
+            if not reg_date:
+                return (0, "9999-99-99")
+            overdue = 0 if reg_date >= str(date.today()) else -1
+            return (overdue, reg_date)
+        return sorted(items, key=sort_key)
+
+    elif lifecycle_filter == "ACTIVE":
+        # 实际入职日期从近到远
+        def sort_key(item):
+            return -(item.get("actual_hire_date") or "0000-00-00")
+        return sorted(items, key=sort_key)
+
+    elif lifecycle_filter == "SEPARATING":
+        # 最后工作日从早到晚
+        def sort_key(item):
+            sep_date = item.get("actual_separation_date") or "9999-99-99"
+            return sep_date
+        return sorted(items, key=sort_key)
+
+    elif lifecycle_filter == "SEPARATED":
+        # 实际离职日期从近到远
+        def sort_key(item):
+            return -(item.get("actual_separation_date") or "0000-00-00")
+        return sorted(items, key=sort_key)
+
+    return items
+
+
+# ============================================================
+# 构建单条员工列表聚合数据
+# ============================================================
+
+
+def _build_enriched_item(
+    emp_db: Employee,
+    stage: str,
+    emp_rec: Optional[EmploymentRecord],
     risk_obj: Optional[RiskAssessment],
-    risk_level: str,
-    employee_id: int,
+    risk_level_val: str,
+    profile: Optional[EmployeeProfile],
+    contracts: list[EmploymentContract],
+    pending_tasks: dict[int, list[FollowupTask]],
+    pending_confirmations: dict[int, list[HrConfirmationItem]],
     db: Session,
 ) -> dict:
-    """构建员工列表扩展数据：任职信息、试用期进度、风险、下一步事项。"""
-    result: dict = {
-        "current_employment": None,
-        "probation_progress": None,
-        "risk": {"level": None, "reason": None, "assessed_at": None},
-        "next_action": None,
-        "identity_card": None,
-        "signing_company": None,
+    """构建单条员工列表展示所需全部字段。"""
+    today = date.today()
+
+    # 基础字段
+    item: dict = {
+        "id": emp_db.id,
+        "name": emp_db.name,
+        "employee_no": emp_db.employee_no,
+        "mobile": emp_db.mobile,
+        "email": emp_db.email,
+        "employee_status": _enum_value(emp_db.employee_status),
+        "lifecycle_stage": stage,
     }
 
-    if current_emp:
-        today = date.today()
-        ce = current_emp.dict()
+    # 默认空值
+    item["gender"] = None
+    item["age"] = None
+    item["identity_card"] = None
+    item["birth_date"] = None
+    item["current_tenure_text"] = None
+    item["total_tenure_text"] = None
 
-        result["current_employment"] = {
+    item["probation_progress"] = None
+    item["probation_days_remaining"] = None
+    item["probation_overdue_days"] = None
+    item["expected_regularization_date"] = None
+
+    item["contract_status"] = None
+    item["contract_type"] = None
+    item["contract_end_date"] = None
+
+    item["social_insurance_status"] = None
+    item["housing_fund_status"] = None
+
+    item["profile_completeness_status"] = None
+
+    item["current_employment"] = None
+    item["next_action"] = None
+    item["risk"] = {"level": None, "reason": None, "assessed_at": None}
+
+    # ----- 员工资料 -----
+    if profile:
+        item["identity_card"] = profile.identity_card
+        item["gender"] = profile.gender
+        item["social_insurance_status"] = profile.social_insurance_status
+        item["housing_fund_status"] = profile.housing_fund_status
+        # 年龄从身份证或出生日期计算
+        _, age = _resolve_birth_date_and_age(profile)
+        item["age"] = age
+        # 出生日期：优先身份证
+        birth_from_id = _parse_birth_date_from_id_card(profile.identity_card) if profile.identity_card else None
+        item["birth_date"] = _str_date(birth_from_id or profile.birth_date)
+
+    # 资料完整性
+    item["profile_completeness_status"] = _enum_value(emp_db.profile_completeness_status) if emp_db.profile_completeness_status else None
+
+    # ----- 当前任职 -----
+    if emp_rec:
+        ce = emp_rec.dict()
+        current_emp_summary = {
             "id": ce["id"],
             "department": ce.get("department"),
             "position": ce.get("position"),
             "team_name": ce.get("team_name"),
+            "work_city": ce.get("work_city"),
+            "work_mode": ce.get("work_mode"),
             "employment_status": ce["employment_status"],
             "hire_date": _str_date(ce.get("hire_date")),
             "expected_hire_date": _str_date(ce.get("expected_hire_date")),
@@ -557,97 +982,64 @@ def _build_enrichment(
             "actual_regularization_date": _str_date(ce.get("actual_regularization_date")),
             "actual_separation_date": _str_date(ce.get("separation_date")),
         }
+        item["current_employment"] = current_emp_summary
 
-        # 查询员工档案（身份证号）
-        profile = (
-            db.query(EmployeeProfile)
-            .filter(EmployeeProfile.employee_id == employee_id, EmployeeProfile.is_deleted == False)
-            .first()
+        # 实际入职日期（顶层用于排序）
+        item["actual_hire_date"] = _str_date(ce.get("actual_hire_date") or ce.get("hire_date"))
+        item["expected_hire_date"] = _str_date(ce.get("expected_hire_date"))
+        item["actual_separation_date"] = _str_date(ce.get("separation_date"))
+
+        # 试用期进度
+        progress, days_remaining, overdue_days, exp_reg_date = _calc_probation_progress(emp_rec)
+        item["probation_progress"] = progress
+        item["probation_days_remaining"] = days_remaining
+        item["probation_overdue_days"] = overdue_days
+        item["expected_regularization_date"] = exp_reg_date
+
+        # 司龄
+        hire_for_tenure = ce.get("actual_hire_date") or ce.get("hire_date")
+        if hire_for_tenure:
+            if isinstance(hire_for_tenure, datetime):
+                hire_for_tenure = hire_for_tenure.date()
+            item["current_tenure_text"] = _calc_tenure(hire_for_tenure, today)
+
+        # 下一事项
+        employment_ids_for_todos = [e.id for e in [emp_rec] if e]
+        item["next_action"] = _build_next_action_for_employee(
+            db=db,
+            employee_id=emp_db.id,
+            current_emp=emp_rec,
+            pending_tasks_by_employment=pending_tasks,
+            pending_confirmations_by_employee=pending_confirmations,
+            employment_ids_for_todos=employment_ids_for_todos,
         )
-        result["identity_card"] = profile.identity_card if profile else None
 
-        # 查询合同信息（签约主体）
-        contract = (
-            db.query(EmploymentContract)
-            .filter(
-                EmploymentContract.employee_id == employee_id,
-                EmploymentContract.employment_id == current_emp.id,
-                EmploymentContract.is_deleted == False,
-            )
-            .first()
-        )
-        result["signing_company"] = contract.signing_company if contract else None
+    # ----- 合同信息（取最新一条）-----
+    if contracts:
+        latest = contracts[0]
+        item["contract_status"] = latest.contract_status
+        item["contract_type"] = _enum_value(latest.contract_type) if latest.contract_type else None
+        item["contract_end_date"] = _str_date(latest.end_date)
 
-        # 试用期进度计算
-        hire = ce.get("hire_date")
-        prob_end = ce.get("probation_end_date")
-        if hire and prob_end:
-            if isinstance(hire, datetime):
-                hire = hire.date()
-            if isinstance(prob_end, datetime):
-                prob_end = prob_end.date()
-            total_days = (prob_end - hire).days
-            if total_days > 0:
-                elapsed = (today - hire).days
-                result["probation_progress"] = min(100, max(0, round(elapsed / total_days * 100)))
-            else:
-                result["probation_progress"] = 100
-        else:
-            result["probation_progress"] = None
-
-        # 下一步事项
-        result["next_action"] = _next_action_for_employee(db, employee_id, current_emp)
-
-    # 风险
+    # ----- 风险 -----
     if risk_obj:
         assessed = (
             risk_obj.created_at.isoformat()
             if hasattr(risk_obj.created_at, "isoformat")
             else str(risk_obj.created_at) if risk_obj.created_at else None
         )
-        result["risk"] = {
-            "level": risk_level,
+        item["risk"] = {
+            "level": risk_level_val,
             "reason": risk_obj.ai_risk_reasons or risk_obj.hr_comment,
             "assessed_at": assessed,
         }
-    else:
-        result["risk"] = {"level": None, "reason": None, "assessed_at": None}
 
-    # 性别、出生日期
-    profile = (
-        db.query(EmployeeProfile)
-        .filter(EmployeeProfile.employee_id == employee_id)
-        .first()
-    )
-    result["gender"] = profile.gender if profile else None
-
-    # 出生日期：优先取 profile.birth_date，否则从身份证号提取
-    if profile and profile.birth_date:
-        result["birth_date"] = _str_date(profile.birth_date)
-    elif profile and profile.identity_card:
-        id_card = profile.identity_card.strip()
-        # 18 位身份证第 6～13 位为 YYYYMMDD
-        if len(id_card) >= 14:
-            y, m, d = id_card[6:10], id_card[10:12], id_card[12:14]
-            if y.isdigit() and m.isdigit() and d.isdigit():
-                result["birth_date"] = f"{y}-{m}-{d}"
-            else:
-                result["birth_date"] = None
-        else:
-            result["birth_date"] = None
-    else:
-        result["birth_date"] = None
-
-    return result
+    return item
 
 
-def _str_date(d: Optional[date | datetime]) -> Optional[str]:
-    """将 date/datetime 转为 YYYY-MM-DD 字符串。"""
-    if not d:
-        return None
-    if isinstance(d, datetime):
-        return d.strftime("%Y-%m-%d")
-    return d.isoformat()
+# ============================================================
+# 员工时间线
+# ============================================================
 
 
 def get_employee_timeline(db: Session, employee_id: int, limit: int = 10) -> dict:
@@ -655,6 +1047,8 @@ def get_employee_timeline(db: Session, employee_id: int, limit: int = 10) -> dic
 
     返回按 event_time DESC 排序的事件列表，每种业务事件使用真实发生时间。
     """
+    import json
+
     from ..models.followup_task import FollowupTask
     from ..models.communication import CommunicationRecord
     from ..models.risk import RiskAssessment
@@ -758,7 +1152,6 @@ def get_employee_timeline(db: Session, employee_id: int, limit: int = 10) -> dic
             .all()
         )
         for ft in followup_tasks:
-            # 创建跟进任务
             if ft.created_at:
                 all_events.append({
                     "id": f"FOLLOWUP_TASK_CREATED_{ft.id}",
@@ -778,7 +1171,6 @@ def get_employee_timeline(db: Session, employee_id: int, limit: int = 10) -> dic
                         "node_code": ft.node_code_snapshot,
                     },
                 })
-            # 开始处理
             if ft.followup_status in (FollowupTaskStatus.IN_PROGRESS, FollowupTaskStatus.PENDING_CONFIRMATION, FollowupTaskStatus.COMPLETED):
                 event_time = ft.updated_at or ft.created_at
                 if event_time:
@@ -799,7 +1191,6 @@ def get_employee_timeline(db: Session, employee_id: int, limit: int = 10) -> dic
                             "planned_date": str(ft.planned_date) if ft.planned_date else None,
                         },
                     })
-            # 提交确认
             if ft.followup_status in (FollowupTaskStatus.PENDING_CONFIRMATION, FollowupTaskStatus.COMPLETED):
                 conf_event_time = ft.updated_at or ft.created_at
                 if conf_event_time:
@@ -819,7 +1210,6 @@ def get_employee_timeline(db: Session, employee_id: int, limit: int = 10) -> dic
                             "task_name": ft.task_name,
                         },
                     })
-            # 已完成
             if ft.followup_status == FollowupTaskStatus.COMPLETED:
                 complete_time = ft.completed_at or ft.updated_at
                 if complete_time:
@@ -839,7 +1229,6 @@ def get_employee_timeline(db: Session, employee_id: int, limit: int = 10) -> dic
                             "task_name": ft.task_name,
                         },
                     })
-            # 已取消
             if ft.followup_status == FollowupTaskStatus.CANCELLED:
                 cancel_time = ft.updated_at or ft.created_at
                 if cancel_time:
@@ -893,9 +1282,9 @@ def get_employee_timeline(db: Session, employee_id: int, limit: int = 10) -> dic
         for comm in communications:
             event_time = comm.communication_at or comm.created_at
             if event_time:
-                risk_level = risk_level_value(latest_risk_by_comm.get(comm.id))
-                if risk_level == "NONE":
-                    risk_level = None
+                risk_level_val = risk_level_value(latest_risk_by_comm.get(comm.id))
+                if risk_level_val == "NONE":
+                    risk_level_val = None
 
                 all_events.append({
                     "id": f"COMMUNICATION_CREATED_{comm.id}",
@@ -911,80 +1300,80 @@ def get_employee_timeline(db: Session, employee_id: int, limit: int = 10) -> dic
                     "operator_name": comm.hr_user_id or comm.created_by or "system",
                     "metadata": {
                         "communication_type": comm.communication_type,
-                        "risk_level": risk_level,
+                        "risk_level": risk_level_val,
                         "hr_conclusion": comm.hr_conclusion,
                     },
                 })
 
-            # 6. AI 总结完成
-            ai_summaries = (
-                db.query(AiSummaryVersion)
-                .filter(
-                    AiSummaryVersion.communication_id == comm.id,
-                    AiSummaryVersion.summary_status == "SUCCEEDED",
+                # 6. AI 总结完成
+                ai_summaries = (
+                    db.query(AiSummaryVersion)
+                    .filter(
+                        AiSummaryVersion.communication_id == comm.id,
+                        AiSummaryVersion.summary_status == "SUCCEEDED",
+                    )
+                    .order_by(AiSummaryVersion.finished_at.asc())
+                    .all()
                 )
-                .order_by(AiSummaryVersion.finished_at.asc())
-                .all()
-            )
-            for ai in ai_summaries:
-                ai_time = ai.finished_at or ai.updated_at or ai.created_at
-                if ai_time:
-                    all_events.append({
-                        "id": f"AI_SUMMARY_COMPLETED_{ai.id}",
-                        "event_type": "AI_SUMMARY_COMPLETED",
-                        "event_name": "AI 总结完成",
-                        "event_time": ai_time.isoformat() if hasattr(ai_time, "isoformat") else str(ai_time),
-                        "employee_id": employee_id,
-                        "employment_id": comm.employment_id,
-                        "source_id": ai.id,
-                        "source_type": "AI_SUMMARY",
-                        "title": "AI 总结完成",
-                        "summary": f"AI 对沟通内容进行了分析总结",
-                        "operator_name": ai.created_by or "system",
-                        "metadata": {
-                            "provider": ai.provider,
-                            "model_name": ai.model_name,
-                            "is_current": ai.is_current,
-                        },
-                    })
+                for ai in ai_summaries:
+                    ai_time = ai.finished_at or ai.updated_at or ai.created_at
+                    if ai_time:
+                        all_events.append({
+                            "id": f"AI_SUMMARY_COMPLETED_{ai.id}",
+                            "event_type": "AI_SUMMARY_COMPLETED",
+                            "event_name": "AI 总结完成",
+                            "event_time": ai_time.isoformat() if hasattr(ai_time, "isoformat") else str(ai_time),
+                            "employee_id": employee_id,
+                            "employment_id": comm.employment_id,
+                            "source_id": ai.id,
+                            "source_type": "AI_SUMMARY",
+                            "title": "AI 总结完成",
+                            "summary": f"AI 对沟通内容进行了分析总结",
+                            "operator_name": ai.created_by or "system",
+                            "metadata": {
+                                "provider": ai.provider,
+                                "model_name": ai.model_name,
+                                "is_current": ai.is_current,
+                            },
+                        })
 
-            # 7. 风险评估结果
-            risks = (
-                db.query(RiskAssessment)
-                .filter(
-                    RiskAssessment.communication_id == comm.id,
-                    RiskAssessment.is_deleted == False,
+                # 7. 风险评估结果
+                risks = (
+                    db.query(RiskAssessment)
+                    .filter(
+                        RiskAssessment.communication_id == comm.id,
+                        RiskAssessment.is_deleted == False,
+                    )
+                    .order_by(RiskAssessment.created_at.asc(), RiskAssessment.id.asc())
+                    .all()
                 )
-                .order_by(RiskAssessment.created_at.asc(), RiskAssessment.id.asc())
-                .all()
-            )
-            for risk in risks:
-                risk_time = risk.created_at
-                if risk_time:
-                    risk_level = risk_level_value(risk)
-                    if risk_level == "NONE":
-                        risk_level = "UNSPECIFIED"
-                    level_label = {"HIGH": "高风险", "MEDIUM": "需关注", "LOW": "低风险", "UNSPECIFIED": "未评估"}.get(risk_level, risk_level)
-                    all_events.append({
-                        "id": f"RISK_LEVEL_CHANGED_{risk.id}",
-                        "event_type": "RISK_LEVEL_CHANGED",
-                        "event_name": "风险等级变化",
-                        "event_time": risk_time.isoformat() if hasattr(risk_time, "isoformat") else str(risk_time),
-                        "employee_id": employee_id,
-                        "employment_id": comm.employment_id,
-                        "source_id": risk.id,
-                        "source_type": "RISK",
-                        "title": "风险等级变化",
-                        "summary": f"风险评估等级: {level_label}",
-                        "operator_name": risk.reviewed_by or risk.created_by or "system",
-                        "metadata": {
-                            "risk_level": risk_level,
-                            "ai_risk_level": risk.ai_risk_level,
-                            "hr_risk_level": risk.hr_risk_level,
-                            "risk_review_status": risk.risk_review_status,
-                            "risk_reasons": risk.ai_risk_reasons or risk.hr_comment,
-                        },
-                    })
+                for risk in risks:
+                    risk_time = risk.created_at
+                    if risk_time:
+                        risk_level_val = risk_level_value(risk)
+                        if risk_level_val == "NONE":
+                            risk_level_val = "UNSPECIFIED"
+                        level_label = {"HIGH": "高风险", "MEDIUM": "需关注", "LOW": "低风险", "UNSPECIFIED": "未评估"}.get(risk_level_val, risk_level_val)
+                        all_events.append({
+                            "id": f"RISK_LEVEL_CHANGED_{risk.id}",
+                            "event_type": "RISK_LEVEL_CHANGED",
+                            "event_name": "风险等级变化",
+                            "event_time": risk_time.isoformat() if hasattr(risk_time, "isoformat") else str(risk_time),
+                            "employee_id": employee_id,
+                            "employment_id": comm.employment_id,
+                            "source_id": risk.id,
+                            "source_type": "RISK",
+                            "title": "风险等级变化",
+                            "summary": f"风险评估等级: {level_label}",
+                            "operator_name": risk.reviewed_by or risk.created_by or "system",
+                            "metadata": {
+                                "risk_level": risk_level_val,
+                                "ai_risk_level": risk.ai_risk_level,
+                                "hr_risk_level": risk.hr_risk_level,
+                                "risk_review_status": risk.risk_review_status,
+                                "risk_reasons": risk.ai_risk_reasons or risk.hr_comment,
+                            },
+                        })
 
         # 8. 试用期评估
         prob_reviews = (
@@ -997,7 +1386,6 @@ def get_employee_timeline(db: Session, employee_id: int, limit: int = 10) -> dic
             .all()
         )
         for pr in prob_reviews:
-            # 创建评估
             if pr.created_at:
                 all_events.append({
                     "id": f"PROBATION_REVIEW_CREATED_{pr.id}",
@@ -1017,7 +1405,6 @@ def get_employee_timeline(db: Session, employee_id: int, limit: int = 10) -> dic
                         "recommendation": pr.recommendation,
                     },
                 })
-            # 更新评估
             if pr.updated_at and pr.updated_at != pr.created_at:
                 all_events.append({
                     "id": f"PROBATION_REVIEW_UPDATED_{pr.id}",
@@ -1048,7 +1435,6 @@ def get_employee_timeline(db: Session, employee_id: int, limit: int = 10) -> dic
             .all()
         )
         for reg in reg_records:
-            # 发起转正
             if reg.created_at:
                 all_events.append({
                     "id": f"REGULARIZATION_STARTED_{reg.id}",
@@ -1067,7 +1453,6 @@ def get_employee_timeline(db: Session, employee_id: int, limit: int = 10) -> dic
                         "effective_date": str(reg.effective_date) if reg.effective_date else None,
                     },
                 })
-            # 完成转正（基于 effective_date）
             if reg.effective_date and reg.decision == "APPROVED":
                 eff_dt = datetime.combine(reg.effective_date, datetime.min.time())
                 all_events.append({
@@ -1160,7 +1545,6 @@ def get_employee_timeline(db: Session, employee_id: int, limit: int = 10) -> dic
             .all()
         )
         for sep in seps:
-            # 启动离职
             if sep.created_at:
                 all_events.append({
                     "id": f"SEPARATION_STARTED_{sep.id}",
@@ -1179,7 +1563,6 @@ def get_employee_timeline(db: Session, employee_id: int, limit: int = 10) -> dic
                         "reason": sep.reason,
                     },
                 })
-            # 确认离职
             if sep.confirmed_at or sep.actual_separation_date:
                 confirm_time = sep.confirmed_at
                 if not confirm_time and sep.actual_separation_date:

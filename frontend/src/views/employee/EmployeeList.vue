@@ -2,8 +2,16 @@
 import { ref, computed, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { get, del } from '@/api'
-import { formatDate, calculateOverdueDays } from '@/utils/date'
-import { getStatusLabel, employmentStatusMap } from '@/constants/status'
+import { formatDate } from '@/utils/date'
+import {
+  getStatusLabel,
+  contractStatusMap,
+  contractTypeMap,
+  socialInsuranceStatusMap,
+  housingFundStatusMap,
+  profileCompletenessMap,
+  genderMap,
+} from '@/constants/status'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import BaseModal from '@/components/base/BaseModal.vue'
@@ -14,7 +22,7 @@ import EmployeeAvatar from '@/components/business/EmployeeAvatar.vue'
 import LifecycleBadge from '@/components/business/LifecycleBadge.vue'
 import RiskBadge from '@/components/business/RiskBadge.vue'
 import type { EmployeeListItem, EmployeeListData } from '@/types'
-import { Upload, Plus, MoreHorizontal } from 'lucide-vue-next'
+import { Upload, Plus, MoreHorizontal, ChevronUp, ChevronDown, ArrowUpDown } from 'lucide-vue-next'
 
 const router = useRouter()
 const route = useRoute()
@@ -27,15 +35,17 @@ const total = ref(0)
 const loading = ref(false)
 const error = ref(false)
 const page = ref(1)
-const pageSize = ref(10)
+const pageSize = ref(20)
 const openMenuId = ref<number | null>(null)
+const sortBy = ref<string>('default')
+const sortOrder = ref<string>('asc')
 
 // ====== 分页计算 ======
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 const showingFrom = computed(() => (page.value - 1) * pageSize.value + 1)
 const showingTo = computed(() => Math.min(page.value * pageSize.value, total.value))
 
-// ====== 是否有激活的筛选条件（用于空状态提示） ======
+// ====== 是否有激活的筛选条件 ======
 const hasActiveFilters = computed(() =>
   !!(route.query.keyword || route.query.lifecycle_stage || route.query.risk_level)
 )
@@ -47,6 +57,16 @@ watch(() => route.query, () => {
   } else {
     page.value = 1
   }
+  if (route.query.sort_by) {
+    sortBy.value = route.query.sort_by as string
+  } else {
+    sortBy.value = 'default'
+  }
+  if (route.query.sort_order) {
+    sortOrder.value = route.query.sort_order as string
+  } else {
+    sortOrder.value = route.query.lifecycle_stage ? 'asc' : 'asc'
+  }
   loadEmployees()
 }, { immediate: true, deep: true })
 
@@ -57,6 +77,31 @@ watch(pageSize, () => {
   loadEmployees()
 })
 
+// ====== 排序切换 ======
+function toggleSort(field: string) {
+  if (sortBy.value === field) {
+    sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    sortBy.value = field
+    sortOrder.value = 'asc'
+  }
+  page.value = 1
+  router.replace({
+    query: {
+      ...route.query,
+      sort_by: sortBy.value !== 'default' ? sortBy.value : undefined,
+      sort_order: sortOrder.value !== 'asc' ? sortOrder.value : undefined,
+      page: undefined,
+    },
+  })
+  loadEmployees()
+}
+
+function sortIcon(field: string): string {
+  if (sortBy.value !== field) return 'none'
+  return sortOrder.value === 'asc' ? 'asc' : 'desc'
+}
+
 // ====== 加载员工列表 ======
 async function loadEmployees() {
   loading.value = true
@@ -65,6 +110,8 @@ async function loadEmployees() {
     const params: Record<string, any> = {
       page: page.value,
       page_size: pageSize.value,
+      sort_by: sortBy.value,
+      sort_order: sortOrder.value,
     }
     const q = route.query
     if (q.keyword) params.keyword = q.keyword as string
@@ -125,39 +172,78 @@ function confirmDelete(emp: EmployeeListItem) {
   })
 }
 
-// ====== 任职信息的 tooltip ======
-function deptPosTitle(emp: { department?: string | null; position?: string | null }): string {
-  const parts: string[] = []
-  if (emp.department) parts.push(emp.department)
-  if (emp.position) parts.push(emp.position)
-  return parts.join(' · ') || ''
+// ====== 点击下一事项 ======
+function goToNextAction(emp: EmployeeListItem) {
+  if (!emp.next_action) return
+  const action = emp.next_action
+  const baseType = action.source_type
+  if (baseType === 'FOLLOWUP_TASK') {
+    router.push(`/followup-tasks/${action.id}`)
+  } else if (baseType === 'HR_CONFIRMATION') {
+    router.push(`/confirmations/${action.id}`)
+  } else if (baseType === 'REGULARIZATION') {
+    router.push(`/employees/${emp.id}/regularization`)
+  } else if (baseType === 'PENDING_EMPLOYMENT') {
+    router.push(`/employees/${emp.id}/employment`)
+  } else if (baseType === 'TODO') {
+    router.push(`/todos/${action.id}`)
+  } else {
+    router.push(`/employees/${emp.id}`)
+  }
 }
 
-// ====== 格式化短日期 ======
-function shortDate(dateStr?: string | null): string {
-  if (!dateStr) return ''
-  const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/)
-  if (!match) return dateStr
-  return `${parseInt(match[2])}月${parseInt(match[3])}日`
+// ====== 辅助展示函数 ======
+
+function calcAge(age?: number | null): string {
+  if (age === null || age === undefined) return '年龄未知'
+  return `${age}岁`
 }
 
-// ====== 年龄计算 ======
-function calcAge(birthDate?: string | null): number {
-  if (!birthDate) return 0
-  const d = new Date(birthDate)
-  if (isNaN(d.getTime())) return 0
-  const today = new Date()
-  let age = today.getFullYear() - d.getFullYear()
-  const m = today.getMonth() - d.getMonth()
-  if (m < 0 || (m === 0 && today.getDate() < d.getDate())) age--
-  return age
+function displayGender(gender?: string | null): string {
+  if (!gender) return '性别未知'
+  return getStatusLabel(genderMap, gender)
 }
 
-// ====== 身份证号脱敏 ======
-function maskIdCard(idCard?: string | null): string {
-  if (!idCard) return ''
-  if (idCard.length < 10) return idCard
-  return idCard.slice(0, 4) + '**********' + idCard.slice(-4)
+function displayIdCard(idCard?: string | null): string {
+  if (!idCard) return '未填写身份证'
+  return idCard
+}
+
+function displayMobile(mobile?: string | null): string {
+  if (!mobile) return '未填写手机号'
+  return mobile
+}
+
+function displayTenure(text?: string | null): string {
+  if (!text) return ''
+  return `司龄${text}`
+}
+
+function joinParts(parts: (string | null | undefined)[], sep: string = ' · '): string {
+  const filtered = parts.filter((p): p is string => !!p)
+  return filtered.length > 0 ? filtered.join(sep) : ''
+}
+
+function contractLabel(emp: EmployeeListItem): string {
+  const status = emp.contract_status
+  const ctype = emp.contract_type
+  if (!status && !ctype) return '未录入合同'
+  const label = getStatusLabel(contractStatusMap, status)
+  if (ctype === 'INDEFINITE') return `${label} · 无固定期限`
+  if (ctype === 'FIXED_TERM' && emp.contract_end_date) {
+    return `${label} · ${emp.contract_end_date}到期`
+  }
+  return label || '未录入合同'
+}
+
+function benefitLabel(status?: string | null, map: Record<string, string> = {}): string {
+  if (!status) return '未填写'
+  return getStatusLabel(map, status)
+}
+
+function colSortClass(field: string): string {
+  if (sortBy.value !== field) return ''
+  return sortOrder.value === 'asc' ? 'sorted-asc' : 'sorted-desc'
 }
 </script>
 
@@ -188,264 +274,265 @@ function maskIdCard(idCard?: string | null): string {
       <!-- 骨架屏加载 -->
       <div v-if="loading && employees.length === 0" class="table-skeleton">
         <div v-for="n in 5" :key="n" class="skeleton-row">
-          <div class="skeleton-cell skeleton-cell-employee">
-            <div class="skeleton-avatar" />
-            <div class="skeleton-lines">
-              <div class="skeleton-line w-24" />
-              <div class="skeleton-line w-32" />
-            </div>
-          </div>
-          <div class="skeleton-cell"><div class="skeleton-line w-28" /><div class="skeleton-line w-20" /></div>
-          <div class="skeleton-cell"><div class="skeleton-line w-28" /><div class="skeleton-line w-20" /></div>
-          <div class="skeleton-cell"><div class="skeleton-line w-20" /><div class="skeleton-line w-16" /></div>
-          <div class="skeleton-cell"><div class="skeleton-line w-28" /><div class="skeleton-line w-16" /></div>
-          <div class="skeleton-cell skeleton-cell-actions"><div class="skeleton-line w-12" /></div>
+          <div class="skeleton-cell" style="flex: 0 0 190px;"><div class="skeleton-line w-28" /><div class="skeleton-line w-20" /></div>
+          <div class="skeleton-cell" style="flex: 0 0 220px;"><div class="skeleton-line w-28" /><div class="skeleton-line w-20" /></div>
+          <div class="skeleton-cell" style="flex: 0 0 220px;"><div class="skeleton-line w-28" /><div class="skeleton-line w-20" /></div>
+          <div class="skeleton-cell" style="flex: 0 0 145px;"><div class="skeleton-line w-20" /><div class="skeleton-line w-16" /></div>
+          <div class="skeleton-cell" style="flex: 0 0 220px;"><div class="skeleton-line w-28" /><div class="skeleton-line w-16" /></div>
+          <div class="skeleton-cell" style="flex: 0 0 190px;"><div class="skeleton-line w-24" /><div class="skeleton-line w-16" /></div>
+          <div class="skeleton-cell" style="flex: 0 0 135px;"><div class="skeleton-line w-16" /></div>
+          <div class="skeleton-cell" style="flex: 0 0 160px;"><div class="skeleton-line w-20" /></div>
+          <div class="skeleton-cell" style="flex: 0 0 90px;"><div class="skeleton-line w-12" /></div>
         </div>
       </div>
 
       <!-- 空状态 -->
       <div v-else-if="!loading && employees.length === 0 && !hasActiveFilters">
-        <BaseEmpty
-          title="还没有员工档案"
-          description="可以新增员工或导入花名册"
-        />
+        <BaseEmpty title="还没有员工档案" description="可以新增员工或导入花名册" />
       </div>
       <div v-else-if="!loading && employees.length === 0">
-        <BaseEmpty
-          title="没有找到符合条件的员工"
-          description="请调整搜索词或筛选条件"
-        />
+        <BaseEmpty title="没有找到符合条件的员工" description="请调整搜索词或筛选条件" />
       </div>
 
       <!-- 数据表格 -->
-      <table v-if="employees.length > 0">
-        <thead>
-          <tr>
-            <th class="col-employee">员工</th>
-            <th class="col-employment">任职信息</th>
-            <th class="col-probation">入职与试用</th>
-            <th class="col-status">状态与风险</th>
-            <th class="col-next">接下来</th>
-            <th class="col-actions">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="emp in employees" :key="emp.id" class="emp-row">
-            <!-- 1. 员工列 -->
-            <td class="td-employee">
-              <div class="emp-cell hover-trigger">
-                <EmployeeAvatar :name="emp.name" size="sm" />
-                <div class="emp-info">
-                  <div class="emp-name-row">
-                    <span class="emp-name">{{ emp.name }}</span>
-                    <span v-if="emp.birth_date" class="emp-age">{{ calcAge(emp.birth_date) }}岁</span>
+      <div v-if="employees.length > 0" class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th class="col-employee">
+                员工
+                <button class="sort-btn" :class="colSortClass('name')" @click="toggleSort('name')">
+                  <ArrowUpDown :size="14" v-if="sortBy !== 'name'" />
+                  <ChevronUp :size="14" v-else-if="sortOrder === 'asc'" />
+                  <ChevronDown :size="14" v-else />
+                </button>
+              </th>
+              <th class="col-identity">身份信息</th>
+              <th class="col-employment">任职信息</th>
+              <th class="col-hire">
+                入职信息
+                <button class="sort-btn" :class="colSortClass('actual_hire_date')" @click="toggleSort('actual_hire_date')">
+                  <ArrowUpDown :size="14" v-if="sortBy !== 'actual_hire_date'" />
+                  <ChevronUp :size="14" v-else-if="sortOrder === 'asc'" />
+                  <ChevronDown :size="14" v-else />
+                </button>
+              </th>
+              <th class="col-probation">
+                试用进度
+                <button class="sort-btn" :class="colSortClass('probation_progress')" @click="toggleSort('probation_progress')">
+                  <ArrowUpDown :size="14" v-if="sortBy !== 'probation_progress'" />
+                  <ChevronUp :size="14" v-else-if="sortOrder === 'asc'" />
+                  <ChevronDown :size="14" v-else />
+                </button>
+              </th>
+              <th class="col-contract">合同与福利</th>
+              <th class="col-status">
+                状态与风险
+                <button class="sort-btn" :class="colSortClass('risk_level')" @click="toggleSort('risk_level')">
+                  <ArrowUpDown :size="14" v-if="sortBy !== 'risk_level'" />
+                  <ChevronUp :size="14" v-else-if="sortOrder === 'asc'" />
+                  <ChevronDown :size="14" v-else />
+                </button>
+              </th>
+              <th class="col-next">下一事项</th>
+              <th class="col-actions">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="emp in employees" :key="emp.id" class="emp-row" @click="goToDetail(emp)">
+              <!-- 1. 员工列 -->
+              <td class="td-employee" @click.stop>
+                <div class="emp-cell">
+                  <EmployeeAvatar :name="emp.name" size="sm" />
+                  <div class="emp-info">
+                    <span class="emp-name" :title="emp.name">{{ emp.name }}</span>
+                    <span class="emp-meta">{{ emp.employee_no || '' }}</span>
+                    <span class="emp-meta">{{ displayMobile(emp.mobile) }}</span>
                   </div>
-                  <span v-if="emp.employee_no || emp.mobile || emp.gender" class="emp-meta">
-                    <template v-if="emp.gender">{{ emp.gender === 'MALE' ? '男' : emp.gender === 'FEMALE' ? '女' : emp.gender }}</template>
-                    <template v-if="emp.gender && (emp.employee_no || emp.mobile)"> · </template>
-                    <template v-if="emp.employee_no">{{ emp.employee_no }}</template>
-                    <template v-if="emp.employee_no && emp.mobile"> · </template>
-                    <template v-if="emp.mobile">{{ emp.mobile }}</template>
+                </div>
+              </td>
+
+              <!-- 2. 身份信息列 -->
+              <td class="td-identity">
+                <div class="identity-row">{{ displayGender(emp.gender) }}{{ emp.gender && (emp.age !== null && emp.age !== undefined) ? ' · ' : '' }}{{ calcAge(emp.age) }}</div>
+                <div class="identity-id-card">{{ displayIdCard(emp.identity_card) }}</div>
+              </td>
+
+              <!-- 3. 任职信息列 -->
+              <td class="td-employment">
+                <template v-if="emp.current_employment">
+                  <div class="dept-pos-row">
+                    {{ joinParts([emp.current_employment.department, emp.current_employment.position]) || '任职信息未完善' }}
+                  </div>
+                  <div class="team-city-row">
+                    <template v-if="emp.current_employment.team_name">
+                      {{ emp.current_employment.team_name }}<template v-if="emp.current_employment.work_city"> · </template>
+                    </template>
+                    <template v-if="emp.current_employment.work_city">
+                      {{ emp.current_employment.work_city }}
+                    </template>
+                    <template v-if="emp.current_employment.work_mode === 'REMOTE'">
+                      <template v-if="emp.current_employment.work_city || emp.current_employment.team_name"> · </template>远程
+                    </template>
+                  </div>
+                </template>
+                <span v-else class="text-muted">任职信息未完善</span>
+              </td>
+
+              <!-- 4. 入职信息列 -->
+              <td class="td-hire">
+                <template v-if="emp.actual_hire_date || emp.expected_hire_date">
+                  <div class="hire-date-row">
+                    {{ formatDate(emp.actual_hire_date || emp.expected_hire_date) }}{{ emp.actual_hire_date ? '入职' : '预计入职' }}
+                  </div>
+                  <div v-if="emp.current_tenure_text" class="tenure-row" :title="emp.total_tenure_text && emp.total_tenure_text !== emp.current_tenure_text ? `累计${emp.total_tenure_text}` : ''">
+                    {{ displayTenure(emp.current_tenure_text) }}
+                  </div>
+                </template>
+                <span v-else class="text-muted">缺少入职日期</span>
+              </td>
+
+              <!-- 5. 试用进度列 -->
+              <td class="td-probation">
+                <template v-if="emp.lifecycle_stage === 'PENDING'">
+                  <span class="text-muted">尚未入职</span>
+                </template>
+                <template v-else-if="emp.probation_progress !== null && emp.lifecycle_stage !== 'ACTIVE'">
+                  <div class="prob-progress-row" :class="{ 'prob-overdue': (emp.probation_overdue_days || 0) > 0, 'prob-soon': (emp.probation_days_remaining !== null && emp.probation_days_remaining !== undefined && emp.probation_days_remaining > 0 && emp.probation_days_remaining <= 7) }">
+                    <span class="prob-pct">{{ emp.probation_progress }}%</span>
+                    <div class="prob-bar-track">
+                      <div class="prob-bar-fill" :style="{ width: emp.probation_progress + '%' }"></div>
+                    </div>
+                  </div>
+                  <div class="prob-date-row">
+                    <template v-if="emp.expected_regularization_date">
+                      转正 {{ emp.expected_regularization_date }}
+                    </template>
+                  </div>
+                  <div v-if="(emp.probation_overdue_days || 0) > 0" class="prob-overdue-text">
+                    已逾期{{ emp.probation_overdue_days }}天
+                  </div>
+                  <div v-else-if="emp.probation_days_remaining !== null && emp.probation_days_remaining !== undefined && emp.probation_days_remaining > 0" class="prob-remaining-text">
+                    剩余{{ emp.probation_days_remaining }}天
+                  </div>
+                </template>
+                <template v-else-if="emp.lifecycle_stage === 'ACTIVE'">
+                  <span class="text-muted">已转正</span>
+                </template>
+                <template v-else-if="emp.lifecycle_stage === 'REGULARIZATION_PENDING'">
+                  <div class="prob-progress-row prob-overdue" v-if="emp.probation_overdue_days">
+                    <span class="prob-pct">100%</span>
+                    <div class="prob-bar-track">
+                      <div class="prob-bar-fill" style="width: 100%"></div>
+                    </div>
+                  </div>
+                  <div class="prob-date-row" v-if="emp.expected_regularization_date">
+                    应转正 {{ emp.expected_regularization_date }}
+                  </div>
+                  <div v-if="(emp.probation_overdue_days || 0) > 0" class="prob-overdue-text">
+                    已逾期{{ emp.probation_overdue_days }}天
+                  </div>
+                </template>
+                <template v-else-if="!emp.current_employment">
+                  <span class="text-muted">无法计算</span>
+                </template>
+                <template v-else>
+                  <span class="text-muted">—</span>
+                </template>
+              </td>
+
+              <!-- 6. 合同与福利列 -->
+              <td class="td-contract">
+                <div class="contract-row">{{ contractLabel(emp) }}</div>
+                <div class="benefit-row">
+                  社保：{{ benefitLabel(emp.social_insurance_status, socialInsuranceStatusMap) }}
+                </div>
+                <div class="benefit-row">
+                  公积金：{{ benefitLabel(emp.housing_fund_status, housingFundStatusMap) }}
+                </div>
+              </td>
+
+              <!-- 7. 状态与风险列 -->
+              <td class="td-status-risk">
+                <div class="status-risk-cell">
+                  <LifecycleBadge :status="emp.lifecycle_stage" size="sm" />
+                  <RiskBadge v-if="emp.risk?.level && emp.risk.level !== 'NONE'" :level="emp.risk.level" size="sm" />
+                </div>
+                <div v-if="emp.profile_completeness_status" class="completeness-row">
+                  <span :class="emp.profile_completeness_status === 'INCOMPLETE' ? 'text-warning' : 'text-muted'">
+                    {{ getStatusLabel(profileCompletenessMap, emp.profile_completeness_status) }}
                   </span>
                 </div>
-                <!-- hover 浮层 -->
-                <div class="emp-hover-card">
-                  <div class="hover-card-item">
-                    <span class="hover-card-label">邮箱</span>
-                    <span class="hover-card-value">{{ emp.email || '—' }}</span>
+              </td>
+
+              <!-- 8. 下一事项列 -->
+              <td class="td-next" @click.stop="goToNextAction(emp)">
+                <template v-if="emp.next_action">
+                  <div class="next-text" :class="{
+                    'urgency-overdue': emp.next_action.urgency === 'OVERDUE',
+                    'urgency-today': emp.next_action.urgency === 'TODAY',
+                    'urgency-soon': emp.next_action.urgency === 'SOON',
+                  }">
+                    {{ emp.next_action.title }}
                   </div>
-                  <div class="hover-card-item">
-                    <span class="hover-card-label">身份证号</span>
-                    <span class="hover-card-value">{{ emp.identity_card ? maskIdCard(emp.identity_card) : '—' }}</span>
+                  <div v-if="emp.next_action.urgency === 'OVERDUE'" class="next-sub overdue">
+                    已逾期{{ emp.next_action.overdue_days }}天
                   </div>
-                  <div class="hover-card-item">
-                    <span class="hover-card-label">公司主体</span>
-                    <span class="hover-card-value">{{ emp.signing_company || '—' }}</span>
+                  <div v-else-if="emp.next_action.urgency === 'TODAY'" class="next-sub today">
+                    今天到期
                   </div>
-                </div>
-              </div>
-            </td>
-
-            <!-- 2. 任职信息列 -->
-            <td class="td-employment">
-              <template v-if="emp.current_employment">
-                <div class="emp-dept-pos" :title="deptPosTitle(emp.current_employment)">
-                  <template v-if="emp.current_employment.department && emp.current_employment.position">
-                    {{ emp.current_employment.department }} · {{ emp.current_employment.position }}
-                  </template>
-                  <template v-else-if="emp.current_employment.department">
-                    {{ emp.current_employment.department }}
-                  </template>
-                  <template v-else-if="emp.current_employment.position">
-                    {{ emp.current_employment.position }}
-                  </template>
-                  <template v-else>
-                    <span class="text-muted">—</span>
-                  </template>
-                </div>
-                <div v-if="emp.current_employment.team_name" class="emp-team">
-                  {{ emp.current_employment.team_name }}
-                </div>
-                <div class="emp-status-tag">
-                  {{ getStatusLabel(employmentStatusMap, emp.current_employment.employment_status) }}
-                </div>
-              </template>
-              <span v-else class="text-muted">—</span>
-            </td>
-
-            <!-- 3. 入职与试用列 -->
-            <td class="td-probation">
-              <template v-if="emp.lifecycle_stage === 'PENDING' && emp.current_employment">
-                <div class="prob-row">{{ shortDate(emp.current_employment.expected_hire_date) || formatDate(emp.current_employment.hire_date) }} 预计入职</div>
-                <div class="text-muted">尚未入职</div>
-              </template>
-              <template v-else-if="emp.lifecycle_stage === 'PROBATION' && emp.current_employment">
-                <div class="prob-row">
-                  {{ formatDate(emp.current_employment.actual_hire_date || emp.current_employment.hire_date) }} 入职
-                </div>
-                <div v-if="emp.current_employment.expected_regularization_date || emp.current_employment.probation_end_date" class="prob-row-sub">
-                  转正 {{ formatDate(emp.current_employment.expected_regularization_date || emp.current_employment.probation_end_date) }}
-                </div>
-                <div v-if="emp.probation_progress !== null" class="prob-bar">
-                  <span class="prob-bar-label">{{ emp.probation_progress }}%</span>
-                  <div class="prob-bar-track">
-                    <div class="prob-bar-fill" :style="{ width: emp.probation_progress + '%' }"></div>
+                  <div v-else-if="emp.next_action.urgency === 'SOON'" class="next-sub soon">
+                    {{ emp.next_action.days_remaining }}天后到期
                   </div>
-                </div>
-              </template>
-              <template v-else-if="emp.lifecycle_stage === 'REGULARIZATION_PENDING' && emp.current_employment">
-                <div class="prob-row">{{ formatDate(emp.current_employment.actual_hire_date || emp.current_employment.hire_date) }} 入职</div>
-                <div class="prob-row-sub" v-if="emp.current_employment.expected_regularization_date || emp.current_employment.probation_end_date">
-                  应转正 {{ formatDate(emp.current_employment.expected_regularization_date || emp.current_employment.probation_end_date) }}
-                </div>
-                <div v-if="emp.current_employment.probation_end_date && calculateOverdueDays(emp.current_employment.probation_end_date) > 0" class="overdue-text">
-                  已超期 {{ calculateOverdueDays(emp.current_employment.probation_end_date) }} 天
-                </div>
-              </template>
-              <template v-else-if="emp.lifecycle_stage === 'ACTIVE' && emp.current_employment">
-                <div class="prob-row">{{ formatDate(emp.current_employment.actual_hire_date || emp.current_employment.hire_date) }} 入职</div>
-                <div class="prob-row-sub" v-if="emp.current_employment.actual_regularization_date">
-                  {{ formatDate(emp.current_employment.actual_regularization_date) }} 转正
-                </div>
-              </template>
-              <template v-else-if="(emp.lifecycle_stage === 'SEPARATING' || emp.lifecycle_stage === 'SEPARATED') && emp.current_employment">
-                <div class="prob-row">{{ formatDate(emp.current_employment.actual_hire_date || emp.current_employment.hire_date) }} 入职</div>
-                <div class="prob-row-sub" v-if="emp.current_employment.actual_separation_date">
-                  {{ formatDate(emp.current_employment.actual_separation_date) }} 离职
-                </div>
-              </template>
-              <template v-else>
-                <span class="text-muted">—</span>
-              </template>
-            </td>
+                  <div v-else-if="emp.next_action.due_at" class="next-sub">
+                    {{ emp.next_action.due_at }}
+                  </div>
+                  <div v-else-if="emp.next_action.source_type === 'HR_CONFIRMATION'" class="next-sub">
+                    待HR确认
+                  </div>
+                </template>
+                <span v-else class="text-muted">暂无待办</span>
+              </td>
 
-            <!-- 4. 状态与风险列 -->
-            <td class="td-status-risk">
-              <div class="status-risk-cell">
-                <LifecycleBadge :status="emp.lifecycle_stage" size="sm" />
-                <RiskBadge v-if="emp.risk?.level" :level="emp.risk.level" size="sm" />
-              </div>
-            </td>
-
-            <!-- 5. 接下来列 -->
-            <td class="td-next">
-              <template v-if="emp.next_action">
-                <div class="next-text" :title="emp.next_action.title">
-                  {{ emp.next_action.title }}
-                </div>
-                <div v-if="emp.next_action.overdue_days > 0" class="next-date overdue">
-                  已逾期 {{ emp.next_action.overdue_days }} 天
-                </div>
-                <div v-else-if="emp.next_action.days_until_due === 0" class="next-date today">
-                  今天到期
-                </div>
-                <div v-else-if="emp.next_action.days_until_due === 1" class="next-date">
-                  明天到期
-                </div>
-                <div v-else-if="emp.next_action.days_until_due && emp.next_action.days_until_due > 1" class="next-date">
-                  {{ shortDate(emp.next_action.due_at) }} · {{ emp.next_action.days_until_due }}天后
-                </div>
-                <div v-else-if="emp.next_action.due_at" class="next-date">
-                  {{ shortDate(emp.next_action.due_at) }}
-                </div>
-              </template>
-              <span v-else class="text-muted">—</span>
-            </td>
-
-            <!-- 6. 操作列 -->
-            <td class="td-actions" @click.stop>
-              <div class="action-group">
-                <button class="action-link" @click="goToDetail(emp)">查看</button>
-                <div class="dropdown-wrap">
-                  <button class="action-icon-btn" @click.stop="toggleMenu(emp.id)">
-                    <MoreHorizontal :size="16" />
-                  </button>
-                  <div v-if="openMenuId === emp.id" class="dropdown-menu" @click.stop>
-                    <button class="dropdown-item" @click="goToDetail(emp)">编辑员工</button>
-                    <button class="dropdown-item" @click="goToDetail(emp)">查看档案</button>
-                    <button class="dropdown-item" @click="goToDetail(emp)">记录沟通</button>
-                    <button
-                      v-if="emp.lifecycle_stage !== 'SEPARATED'"
-                      class="dropdown-item"
-                      @click="goToDetail(emp)"
-                    >
-                      发起异动
+              <!-- 9. 操作列 -->
+              <td class="td-actions" @click.stop>
+                <div class="action-group">
+                  <button class="action-link" @click="goToDetail(emp)">查看</button>
+                  <div class="dropdown-wrap">
+                    <button class="action-icon-btn" @click.stop="toggleMenu(emp.id)">
+                      <MoreHorizontal :size="16" />
                     </button>
-                    <button
-                      v-if="emp.lifecycle_stage !== 'SEPARATED'"
-                      class="dropdown-item"
-                      @click="goToDetail(emp)"
-                    >
-                      办理离职
-                    </button>
-                    <div class="dropdown-divider" />
-                    <button class="dropdown-item dropdown-danger" @click="confirmDelete(emp)">
-                      删除员工
-                    </button>
+                    <div v-if="openMenuId === emp.id" class="dropdown-menu" @click.stop>
+                      <button class="dropdown-item" @click="goToDetail(emp)">编辑资料</button>
+                      <button class="dropdown-item" @click="goToDetail(emp)">查看档案</button>
+                      <button class="dropdown-item" @click="goToDetail(emp)">记录沟通</button>
+                      <button v-if="emp.lifecycle_stage !== 'SEPARATED'" class="dropdown-item" @click="goToDetail(emp)">发起异动</button>
+                      <button v-if="emp.lifecycle_stage !== 'SEPARATED'" class="dropdown-item" @click="goToDetail(emp)">办理离职</button>
+                      <div class="dropdown-divider" />
+                      <button class="dropdown-item dropdown-danger" @click="confirmDelete(emp)">删除员工</button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <!-- 分页栏 -->
     <div v-if="total > 0" class="pagination-bar">
       <div class="pagination-info text-sm text-tertiary">
-        共 {{ total }} 名员工
+        共 {{ total }} 名员工，显示第 {{ showingFrom }} ~ {{ showingTo }} 名
       </div>
       <div class="pagination-controls">
-        <button
-          class="page-btn"
-          :disabled="page <= 1"
-          @click="goToPage(page - 1)"
-        >
-          上一页
-        </button>
+        <button class="page-btn" :disabled="page <= 1" @click="goToPage(page - 1)">上一页</button>
         <template v-for="p in totalPages" :key="p">
-          <button
-            v-if="p === 1 || p === totalPages || Math.abs(p - page) <= 2"
-            class="page-btn page-num"
-            :class="{ active: p === page }"
-            @click="goToPage(p)"
-          >
-            {{ p }}
-          </button>
-          <span
-            v-else-if="p === page - 3 || p === page + 3"
-            class="page-ellipsis"
-          >…</span>
+          <button v-if="p === 1 || p === totalPages || Math.abs(p - page) <= 2" class="page-btn page-num" :class="{ active: p === page }" @click="goToPage(p)">{{ p }}</button>
+          <span v-else-if="p === page - 3 || p === page + 3" class="page-ellipsis">…</span>
         </template>
-        <button
-          class="page-btn"
-          :disabled="page >= totalPages"
-          @click="goToPage(page + 1)"
-        >
-          下一页
-        </button>
-        <select v-model="pageSize" class="page-size-select" @change="goToPage(1)">
+        <button class="page-btn" :disabled="page >= totalPages" @click="goToPage(page + 1)">下一页</button>
+        <select v-model="pageSize" class="page-size-select">
           <option :value="10">10条/页</option>
           <option :value="20">20条/页</option>
           <option :value="50">50条/页</option>
@@ -453,30 +540,14 @@ function maskIdCard(idCard?: string | null): string {
       </div>
     </div>
 
-    <!-- 删除确认弹窗 -->
-    <BaseModal
-      :show="showConfirm"
-      :title="confirmOpts.title"
-      :message="confirmOpts.message"
-      :confirm-text="confirmOpts.confirmText"
-      :danger="confirmOpts.danger"
-      @confirm="handleConfirm"
-      @cancel="handleCancel"
-    />
+    <BaseModal :show="showConfirm" :title="confirmOpts.title" :message="confirmOpts.message" :confirm-text="confirmOpts.confirmText" :danger="confirmOpts.danger" @confirm="handleConfirm" @cancel="handleCancel" />
   </div>
 </template>
 
 <style scoped>
 /* ===== 错误状态 ===== */
-.error-card {
-  padding: 40px;
-  text-align: center;
-}
-.error-message p {
-  margin: 0 0 16px;
-  color: var(--color-danger);
-  font-size: var(--font-size-sm);
-}
+.error-card { padding: 40px; text-align: center; }
+.error-message p { margin: 0 0 16px; color: var(--color-danger); font-size: var(--font-size-sm); }
 
 /* ===== 表格容器 ===== */
 .table-wrapper {
@@ -484,17 +555,22 @@ function maskIdCard(idCard?: string | null): string {
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-card);
 }
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
 table {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
+  min-width: 1150px;
 }
 th, td {
-  padding: 11px 12px;
+  padding: 10px 10px;
   text-align: left;
   border-bottom: 1px solid var(--color-border);
   font-size: var(--font-size-sm);
-  line-height: 1.5;
+  line-height: 1.45;
   vertical-align: middle;
 }
 th {
@@ -505,17 +581,44 @@ th {
   white-space: nowrap;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  padding-top: 10px;
-  padding-bottom: 10px;
+  padding-top: 9px;
+  padding-bottom: 9px;
+  user-select: none;
 }
 
 /* 列宽 */
-.col-employee { width: 180px; }
-.col-employment { width: 180px; }
-.col-probation { width: 220px; }
+.col-employee { width: 190px; }
+.col-identity { width: 210px; }
+.col-employment { width: 210px; }
+.col-hire { width: 140px; }
+.col-probation { width: 200px; }
+.col-contract { width: 180px; }
 .col-status { width: 130px; }
-.col-next { width: 160px; }
-.col-actions { width: 100px; }
+.col-next { width: 155px; }
+.col-actions { width: 85px; }
+
+/* 排序按钮 */
+.sort-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  vertical-align: middle;
+  padding: 0 2px;
+  color: var(--color-text-tertiary);
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.5;
+  transition: opacity 0.12s;
+}
+.sort-btn:hover {
+  opacity: 1;
+  color: var(--color-primary);
+}
+.sort-btn.sorted-asc,
+.sort-btn.sorted-desc {
+  opacity: 1;
+  color: var(--color-primary);
+}
 
 /* ===== 行 ===== */
 .emp-row {
@@ -530,18 +633,17 @@ th {
 }
 
 /* ===== 1. 员工列 ===== */
-.td-employee {
-  vertical-align: middle;
-}
+.td-employee { vertical-align: middle; }
 .emp-cell {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: flex-start;
+  gap: 8px;
 }
 .emp-info {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  line-height: 1.5;
 }
 .emp-name {
   font-weight: 600;
@@ -551,13 +653,6 @@ th {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.emp-name-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
-  overflow: hidden;
-}
 .emp-meta {
   font-size: var(--font-size-xs);
   color: var(--color-text-secondary);
@@ -565,124 +660,67 @@ th {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.emp-age {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-tertiary);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
 
-/* hover 浮层 */
-.hover-trigger {
-  position: relative;
-}
-.emp-hover-card {
-  display: none;
-  position: absolute;
-  left: 0;
-  top: 100%;
-  margin-top: 6px;
-  z-index: 200;
-  background: var(--color-surface, #fff);
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  box-shadow: var(--shadow-popover);
-  padding: 10px 12px;
-  min-width: 220px;
-  white-space: nowrap;
-}
-.hover-trigger:hover .emp-hover-card {
-  display: block;
-}
-.emp-hover-card::before {
-  content: '';
-  position: absolute;
-  top: -5px;
-  left: 24px;
-  width: 8px;
-  height: 8px;
-  background: var(--color-surface, #fff);
-  border-left: 1px solid var(--color-border);
-  border-top: 1px solid var(--color-border);
-  transform: rotate(45deg);
-}
-.hover-card-item {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 3px 0;
-  font-size: var(--font-size-sm);
-  line-height: 1.5;
-}
-.hover-card-item + .hover-card-item {
-  border-top: 1px solid var(--color-border);
-  margin-top: 2px;
-  padding-top: 5px;
-}
-.hover-card-label {
-  flex-shrink: 0;
-  color: var(--color-text-tertiary);
-  min-width: 56px;
-}
-.hover-card-value {
-  color: var(--color-text-primary);
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* ===== 2. 任职信息列 ===== */
-.td-employment {
-  vertical-align: middle;
-}
-.emp-dept-pos {
+/* ===== 2. 身份信息 ===== */
+.td-identity { vertical-align: middle; }
+.identity-row {
   font-size: var(--font-size-sm);
   color: var(--color-text-primary);
-  line-height: 1.4;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.emp-status-tag {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-tertiary);
-  margin-top: 2px;
-}
-.emp-team {
+.identity-id-card {
   font-size: var(--font-size-xs);
   color: var(--color-text-secondary);
-  margin-top: 1px;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-/* ===== 3. 入职与试用列 ===== */
-.td-probation {
-  vertical-align: middle;
-}
-.prob-row {
-  color: var(--color-text-primary);
+/* ===== 3. 任职信息 ===== */
+.td-employment { vertical-align: middle; }
+.dept-pos-row {
   font-size: var(--font-size-sm);
-  line-height: 1.4;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.prob-row-sub {
+.team-city-row {
+  font-size: var(--font-size-xs);
   color: var(--color-text-secondary);
-  font-size: var(--font-size-xs);
   margin-top: 1px;
-}
-.overdue-text {
-  font-size: var(--font-size-xs);
-  color: var(--color-danger);
-  font-weight: 500;
-  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-/* 试用期进度条 */
-.prob-bar {
+/* ===== 4. 入职信息 ===== */
+.td-hire { vertical-align: middle; }
+.hire-date-row {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+  white-space: nowrap;
+}
+.tenure-row {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  margin-top: 1px;
+  white-space: nowrap;
+}
+
+/* ===== 5. 试用进度 ===== */
+.td-probation { vertical-align: middle; }
+.prob-progress-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 4px;
+  gap: 6px;
+  margin-bottom: 3px;
 }
-.prob-bar-label {
+.prob-pct {
   font-size: var(--font-size-xs);
   font-weight: 600;
   color: var(--color-primary);
@@ -690,6 +728,8 @@ th {
   text-align: right;
   flex-shrink: 0;
 }
+.prob-progress-row.prob-overdue .prob-pct { color: var(--color-danger); }
+.prob-progress-row.prob-soon .prob-pct { color: var(--color-warning); }
 .prob-bar-track {
   flex: 1;
   height: 4px;
@@ -703,11 +743,43 @@ th {
   border-radius: 99px;
   transition: width 0.3s ease;
 }
-
-/* ===== 4. 状态与风险列 ===== */
-.td-status-risk {
-  vertical-align: middle;
+.prob-overdue .prob-bar-fill { background: var(--color-danger); }
+.prob-soon .prob-bar-fill { background: var(--color-warning); }
+.prob-date-row {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
 }
+.prob-overdue-text {
+  font-size: var(--font-size-xs);
+  color: var(--color-danger);
+  font-weight: 500;
+}
+.prob-remaining-text {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+}
+.prob-soon .prob-remaining-text { color: var(--color-warning); }
+
+/* ===== 6. 合同与福利 ===== */
+.td-contract { vertical-align: middle; }
+.contract-row {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.benefit-row {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ===== 7. 状态与风险 ===== */
+.td-status-risk { vertical-align: middle; }
 .status-risk-cell {
   display: flex;
   flex-direction: row;
@@ -715,11 +787,14 @@ th {
   gap: 4px;
   align-items: center;
 }
-
-/* ===== 5. 接下来列 ===== */
-.td-next {
-  vertical-align: middle;
+.completeness-row {
+  margin-top: 3px;
+  font-size: var(--font-size-xs);
 }
+.text-warning { color: var(--color-warning); font-weight: 500; }
+
+/* ===== 8. 下一事项 ===== */
+.td-next { vertical-align: middle; cursor: pointer; }
 .next-text {
   font-size: var(--font-size-sm);
   font-weight: 500;
@@ -729,21 +804,20 @@ th {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.next-date {
+.next-text.urgency-overdue { color: var(--color-danger); }
+.next-text.urgency-today { color: var(--color-warning); }
+.next-text.urgency-soon { color: var(--color-warning); }
+.next-sub {
   font-size: var(--font-size-xs);
   color: var(--color-text-tertiary);
-  margin-top: 2px;
+  margin-top: 1px;
+  white-space: nowrap;
 }
-.next-date.overdue {
-  color: var(--color-danger);
-  font-weight: 500;
-}
-.next-date.today {
-  color: var(--color-warning);
-  font-weight: 500;
-}
+.next-sub.overdue { color: var(--color-danger); font-weight: 500; }
+.next-sub.today { color: var(--color-warning); font-weight: 500; }
+.next-sub.soon { color: var(--color-warning); }
 
-/* ===== 6. 操作列 ===== */
+/* ===== 9. 操作列 ===== */
 .td-actions {
   white-space: nowrap;
   vertical-align: middle;
@@ -760,13 +834,11 @@ th {
   font-size: var(--font-size-sm);
   font-weight: 500;
   cursor: pointer;
-  padding: 4px 8px;
+  padding: 4px 6px;
   border-radius: 6px;
   transition: background 0.12s;
 }
-.action-link:hover {
-  background: var(--color-primary-soft);
-}
+.action-link:hover { background: var(--color-primary-soft); }
 .action-icon-btn {
   background: none;
   border: none;
@@ -778,50 +850,27 @@ th {
   align-items: center;
   transition: all 0.12s;
 }
-.action-icon-btn:hover {
-  background: var(--color-bg);
-  color: var(--color-text-secondary);
-}
-.dropdown-wrap {
-  position: relative;
-  display: inline-block;
-}
+.action-icon-btn:hover { background: var(--color-bg); color: var(--color-text-secondary); }
+.dropdown-wrap { position: relative; display: inline-block; }
 .dropdown-menu {
-  position: absolute;
-  right: 0;
-  top: 100%;
-  margin-top: 4px;
+  position: absolute; right: 0; top: 100%; margin-top: 4px;
   background: var(--color-surface, #fff);
   border: 1px solid var(--color-border);
   border-radius: 8px;
   box-shadow: var(--shadow-popover);
-  min-width: 140px;
+  min-width: 130px;
   z-index: 100;
   padding: 4px;
 }
 .dropdown-item {
-  display: block;
-  width: 100%;
-  padding: 8px 12px;
-  border: none;
-  background: none;
-  font-size: var(--font-size-sm);
-  color: var(--color-text-primary);
-  cursor: pointer;
-  text-align: left;
-  border-radius: 4px;
+  display: block; width: 100%; padding: 7px 12px;
+  border: none; background: none;
+  font-size: var(--font-size-sm); color: var(--color-text-primary);
+  cursor: pointer; text-align: left; border-radius: 4px;
 }
-.dropdown-item:hover {
-  background: var(--color-bg);
-}
-.dropdown-danger {
-  color: var(--color-danger) !important;
-}
-.dropdown-divider {
-  height: 1px;
-  background: var(--color-border);
-  margin: 4px 0;
-}
+.dropdown-item:hover { background: var(--color-bg); }
+.dropdown-danger { color: var(--color-danger) !important; }
+.dropdown-divider { height: 1px; background: var(--color-border); margin: 4px 0; }
 
 /* ===== 分页 ===== */
 .pagination-bar {
@@ -831,14 +880,8 @@ th {
   margin-top: 16px;
   padding: 8px 0;
 }
-.pagination-info {
-  font-size: var(--font-size-sm);
-}
-.pagination-controls {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
+.pagination-info { font-size: var(--font-size-sm); color: var(--color-text-tertiary); }
+.pagination-controls { display: flex; align-items: center; gap: 4px; }
 .page-btn {
   padding: 5px 12px;
   border: 1px solid var(--color-border);
@@ -849,28 +892,11 @@ th {
   color: var(--color-text-primary);
   transition: all 0.12s;
 }
-.page-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.page-btn:hover:not(:disabled) {
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-}
-.page-btn.active {
-  background: var(--color-primary);
-  color: #fff;
-  border-color: var(--color-primary);
-}
-.page-num {
-  min-width: 32px;
-  text-align: center;
-  padding: 5px 8px;
-}
-.page-ellipsis {
-  padding: 0 4px;
-  color: var(--color-text-tertiary);
-}
+.page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.page-btn:hover:not(:disabled) { border-color: var(--color-primary); color: var(--color-primary); }
+.page-btn.active { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
+.page-num { min-width: 32px; text-align: center; padding: 5px 8px; }
+.page-ellipsis { padding: 0 4px; color: var(--color-text-tertiary); }
 .page-size-select {
   margin-left: 8px;
   padding: 5px 8px;
@@ -883,54 +909,22 @@ th {
 }
 
 /* ===== 文本工具 ===== */
-.text-muted {
-  color: var(--color-text-tertiary);
-  font-size: var(--font-size-xs);
-}
+.text-muted { color: var(--color-text-tertiary); font-size: var(--font-size-xs); }
 .text-sm { font-size: var(--font-size-sm); }
 .text-xs { font-size: var(--font-size-xs); }
 .text-tertiary { color: var(--color-text-tertiary); }
 
 /* ===== 骨架屏 ===== */
-.table-skeleton {
-  padding: 0 16px;
-}
+.table-skeleton { padding: 0 16px; }
 .skeleton-row {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 16px 0;
+  gap: 12px;
+  padding: 14px 0;
   border-bottom: 1px solid var(--color-border);
 }
-.skeleton-row:last-child {
-  border-bottom: none;
-}
+.skeleton-row:last-child { border-bottom: none; }
 .skeleton-cell {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.skeleton-cell-employee {
-  flex: 0 0 180px;
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 10px;
-}
-.skeleton-cell-actions {
-  flex: 0 0 100px;
-  display: flex;
-  align-items: center;
-}
-.skeleton-avatar {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: var(--color-border);
-  animation: shimmer 1.5s infinite;
-}
-.skeleton-lines {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -956,10 +950,29 @@ th {
 
 /* ===== 响应式 ===== */
 @media (max-width: 1280px) {
-  .col-employee { width: 160px; }
-  .col-employment { width: 160px; }
-  .col-probation { width: 200px; }
+  .col-employee { width: 170px; }
+  .col-identity { width: 180px; }
+  .col-employment { width: 180px; }
+  .col-hire { width: 130px; }
+  .col-probation { width: 180px; }
+  .col-contract { width: 160px; }
   .col-status { width: 120px; }
   .col-next { width: 140px; }
+}
+
+@media (max-width: 1024px) {
+  .col-employee { width: 150px; }
+  .col-identity { width: 160px; }
+  .col-employment { width: 160px; }
+  .col-hire { width: 120px; }
+  .col-probation { width: 170px; }
+  .col-contract { width: 140px; }
+  .col-status { width: 110px; }
+  .col-next { width: 130px; }
+
+  /* 1024px 隐藏次要信息 */
+  .emp-meta:first-of-type { display: none; } /* 隐藏员工编号 */
+  .contract-row { font-size: var(--font-size-xs); }
+  .completeness-row { display: none; }
 }
 </style>

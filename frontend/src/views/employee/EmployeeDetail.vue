@@ -249,12 +249,6 @@ function handleDelete() {
   })
 }
 
-function maskIdCard(value?: string | null): string {
-  if (!value) return '—'
-  if (value.length < 8) return value
-  return value.slice(0, 4) + '****' + value.slice(-4)
-}
-
 function maskAccountNo(value?: string | null): string {
   if (!value) return '—'
   if (value.length <= 4) return value
@@ -485,7 +479,8 @@ onMounted(loadData)
             <div class="profile-grid">
               <div class="profile-field"><label>手机号</label><span>{{ employee.mobile || '—' }}</span></div>
               <div class="profile-field"><label>邮箱</label><span>{{ employee.email || '—' }}</span></div>
-              <div class="profile-field"><label>身份证号</label><span>{{ maskIdCard(profile?.identity_card) }}</span></div>
+              <!-- 身份证号直接展示完整值（系统只有单一HR用户） -->
+              <div class="profile-field"><label>身份证号</label><span>{{ profile?.identity_card || '—' }}</span></div>
               <div class="profile-field"><label>性别</label><span>{{ getStatusLabel(genderMap, profile?.gender) }}</span></div>
               <div class="profile-field"><label>出生日期</label><span>{{ formatDate(profile?.birth_date) }}</span></div>
             </div>

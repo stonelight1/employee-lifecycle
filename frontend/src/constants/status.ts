@@ -125,9 +125,11 @@ export const contractTypeMap: Record<string, string> = {
 
 // 合同状态映射
 export const contractStatusMap: Record<string, string> = {
+  SIGNED: '已签订',
   ACTIVE: '有效',
   EXPIRED: '已到期',
   TERMINATED: '已终止',
+  NOT_SIGNED: '未签订',
 }
 
 // 账户类型映射
@@ -271,6 +273,12 @@ export const taskSourceMap: Record<string, string> = {
 export const reviewStatusMap: Record<string, string> = {
   DRAFT: '草稿',
   COMPLETED: '已完成',
+}
+
+// 资料完整性映射
+export const profileCompletenessMap: Record<string, string> = {
+  COMPLETE: '资料完整',
+  INCOMPLETE: '资料不完整',
 }
 
 // 通用状态获取函数

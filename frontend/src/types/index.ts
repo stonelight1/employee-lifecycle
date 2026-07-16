@@ -11,6 +11,8 @@ export interface EmploymentSummary {
   department?: string | null
   position?: string | null
   team_name?: string | null
+  work_city?: string | null
+  work_mode?: string | null
   employment_status: string
   hire_date?: string | null
   expected_hire_date?: string | null
@@ -32,6 +34,8 @@ export interface NextActionInfo {
   status: string
   days_until_due: number | null
   overdue_days: number
+  days_remaining: number | null
+  urgency: string  // 'OVERDUE' | 'TODAY' | 'SOON' | 'NORMAL'
 }
 
 // 员工列表聚合项（后端 list_employees 统一返回）
@@ -42,14 +46,29 @@ export interface EmployeeListItem {
   mobile?: string | null
   email?: string | null
   gender?: string | null
+  age?: number | null
   birth_date?: string | null
+  identity_card?: string | null
   employee_status: string
   lifecycle_stage: string
   current_employment: EmploymentSummary | null
   probation_progress: number | null
+  probation_days_remaining: number | null
+  probation_overdue_days: number | null
+  expected_regularization_date: string | null
+  current_tenure_text: string | null
+  total_tenure_text: string | null
+  actual_hire_date: string | null
+  expected_hire_date: string | null
+  actual_separation_date: string | null
+  contract_status: string | null
+  contract_type: string | null
+  contract_end_date: string | null
+  social_insurance_status: string | null
+  housing_fund_status: string | null
+  profile_completeness_status: string | null
   risk: RiskInfo
   next_action: NextActionInfo | null
-  identity_card?: string | null
   signing_company?: string | null
 }
 
